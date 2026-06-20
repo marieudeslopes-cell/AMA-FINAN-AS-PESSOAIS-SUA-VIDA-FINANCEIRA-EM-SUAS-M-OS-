@@ -1,1299 +1,517 @@
-<script type="module">
-    // ================= IMPORTAÇÕES DO FIREBASE (SDK v10) =================
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-    import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getFirestore, collection, query, where, getDocs, setDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-
-    // ================= CONFIGURAÇÕES E CONSTANTES =================
-    const mesesAbrev = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
-    const mesesExtenso = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
-
-    // ================= HELPERS =================
-    function hoje() {
-        const h = new Date();
-        h.setHours(0, 0, 0, 0);
-        return h;
-    }
-
-    function stringParaData(s) {
-        return new Date(s + 'T00:00:00');
-    }
-
-    function formatarMoeda(v) {
-        return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    }
-
-    function extrairMesDoVencimento(vencStr) {
-        return mesesAbrev[new Date(vencStr + 'T00:00:00').getMonth()];
-    }
-
-    function extrairAnoDoVencimento(vencStr) {
-        return new Date(vencStr + 'T00:00:00').getFullYear();
-    }
-
-    function extrairMesNumDoVencimento(vencStr) {
-        return new Date(vencStr + 'T00:00:00').getMonth();
-    }
-
-    function formatarDataBR(dataStr) {
-        if (!dataStr) return '—';
-        return dataStr.split('-').reverse().join('/');
-    }
-
-    // ================= GERENCIADOR DE DADOS (Firebase + Cache) =================
-    const dataManager = (() => {
-        let currentUser = null;
-        let dadosFinanceiros = [];
-        let parcelamentos = [];
-
-        // Inicialização do Firebase (Vírgula corrigida no appId)
-        const firebaseConfig = {
-            apiKey: "AIzaSyAJYILwg4AV2cj-IABRYdZlKZlyhjNEpH0",
-            authDomain: "ama-financa-pessoais.firebaseapp.com",
-            projectId: "ama-financa-pessoais",
-            storageBucket: "ama-financa-pessoais.firebasestorage.app",
-            messagingSenderId: "204718835981",
-            appId: "1:204718835981:web:35ff9e6597e18690f04844",
-            measurementId: "G-Z8QXGZNRT7"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        // ===== Autenticação =====
-        async function login(email, senha) {
-            const cred = await signInWithEmailAndPassword(auth, email, senha);
-            return cred.user;
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ama Finanças Pessoais</title>
+    <!-- Tailwind CSS para o Layout -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- Biblioteca de Gráficos (Essencial para não dar tela branca) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Ícones do FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        .toast-message {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #334155;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            z-index: 100;
+            animation: slideUp 0.3s ease-out;
         }
-
-        async function cadastrar(email, senha) {
-            const cred = await createUserWithEmailAndPassword(auth, email, senha);
-            return cred.user;
+        @keyframes slideUp {
+            from { transform: translateY(100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
         }
+        .mes-body { display: none; }
+        .mes-body.aberto { display: block; }
+        .mes-expandir-icon { transition: transform 0.2s; }
+        .mes-expandir-icon.aberto { transform: rotate(180deg); }
+    </style>
+</head>
+<body class="bg-slate-100 font-sans text-slate-800">
 
-        async function logout() {
-            await signOut(auth);
-        }
+    <!-- ================= TELA DE AUTENTICAÇÃO ================= -->
+    <div id="auth-screen" class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
+            <h2 class="text-2xl font-bold text-center mb-6 text-slate-700">Ama Finanças</h2>
+            <form id="authForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">E-mail</label>
+                    <input type="email" id="auth-email" required class="w-full px-4 py-2 border rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">Senha</label>
+                    <input type="password" id="auth-senha" required class="w-full px-4 py-2 border rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500">
+                </div>
+                <button type="submit" id="btn-auth-submit" class="w-full bg-rose-500 text-white py-2.5 rounded-xl font-semibold hover:bg-rose-600 transition">Entrar</button>
+            </form>
+            <p id="auth-toggle-text" class="text-center text-sm text-slate-500 mt-4">
+                Não tem uma conta? <button type="button" class="text-rose-500 font-bold hover:underline">Cadastre-se grátis</button>
+            </p>
+        </div>
+    </div>
 
-        function onAuthChange(callback) {
-            onAuthStateChanged(auth, (user) => {
-                currentUser = user;
-                callback(user);
-            });
-        }
+    <!-- ================= TELA PRINCIPAL DO APP ================= -->
+    <div id="app-screen" class="hidden min-h-screen flex flex-col md:flex-row">
+        <!-- Menu Lateral -->
+        <aside class="w-full md:w-64 bg-slate-900 text-white flex flex-col p-4 space-y-2">
+            <div class="p-4 border-b border-slate-800 text-center">
+                <h1 class="text-xl font-bold text-rose-500">Ama Finanças</h1>
+                <p id="nomePessoaDisplay" class="text-xs text-slate-400 mt-1">USUÁRIO</p>
+            </div>
+            <nav class="flex-1 space-y-1">
+                <button id="btn-dashboard" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-chart-pie"></i> Dashboard</button>
+                <button id="btn-pagar" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-money-bill-wave"></i> Contas a Pagar</button>
+                <button id="btn-receber" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-hand-holding-dollar"></i> Contas a Receber</button>
+                <button id="btn-parcelas" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-credit-card"></i> Parcelamentos</button>
+                <button id="btn-calendario" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-calendar-days"></i> Calendário</button>
+                <button id="btn-historico-pagos" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-clock-rotate-left"></i> Histórico Pagos</button>
+                <button id="btn-historico-recebidos" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-clock-rotate-left"></i> Histórico Recebidos</button>
+                <button id="btn-relatorio" class="tab-btn w-full text-left px-4 py-2.5 rounded-xl transition flex items-center gap-3"><i class="fa-solid fa-file-invoice-dollar"></i> Relatório</button>
+            </nav>
+            <button onclick="handleLogout()" class="w-full text-left px-4 py-2.5 rounded-xl text-rose-400 hover:bg-slate-800 transition flex items-center gap-3"><i class="fa-solid fa-right-from-bracket"></i> Sair</button>
+        </aside>
 
-        function getCurrentUser() {
-            return currentUser;
-        }
+        <!-- Conteúdo Principal -->
+        <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+            <header class="flex justify-between items-center mb-6">
+                <h2 id="page-title" class="text-2xl font-bold text-slate-700">📊 Dashboard</h2>
+                <div class="flex gap-2">
+                    <button onclick="openModal()" class="bg-rose-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-rose-600 transition"><i class="fa-solid fa-plus mr-1"></i> Lançamento</button>
+                    <button onclick="openParcelamentoModal()" class="bg-slate-700 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-slate-800 transition"><i class="fa-solid fa-credit-card mr-1"></i> Parcelar</button>
+                </div>
+            </header>
 
-        // ===== Operações CRUD =====
-        async function carregarDados() {
-            if (!currentUser) return { simples: [], parcelados: [] };
-            try {
-                const qSimples = query(collection(db, "lancamentos_simples"), where("userId", "==", currentUser.uid));
-                const snapSimples = await getDocs(qSimples);
-                const simples = [];
-                snapSimples.forEach(doc => {
-                    simples.push({ id: doc.id, ...doc.data() });
-                });
+            <!-- TAB: DASHBOARD -->
+            <div id="tab-dashboard" class="tab-content block space-y-6">
+                <!-- KPIs -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-sm font-medium text-slate-400">Contas a Pagar</p>
+                        <h3 id="kpi-pagar" class="text-2xl font-bold text-rose-600 mt-1">R$ 0,00</h3>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-sm font-medium text-slate-400">Contas a Receber</p>
+                        <h3 id="kpi-receber" class="text-2xl font-bold text-emerald-600 mt-1">R$ 0,00</h3>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-sm font-medium text-slate-400">Balanço Geral</p>
+                        <h3 id="kpi-balanco" class="text-2xl font-bold text-slate-700 mt-1">R$ 0,00</h3>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                        <p class="text-sm font-medium text-slate-400">Pendências/Atrasos</p>
+                        <h3 id="kpi-atrasos" class="text-2xl font-bold text-amber-500 mt-1">0</h3>
+                    </div>
+                </div>
+                <!-- Gráficos -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 lg:col-span-2 h-80">
+                        <canvas id="chartFluxo"></canvas>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 h-80">
+                        <canvas id="chartStatus"></canvas>
+                    </div>
+                </div>
+            </div>
 
-                const qParc = query(collection(db, "parcelamentos"), where("userId", "==", currentUser.uid));
-                const snapParc = await getDocs(qParc);
-                const parcelados = [];
-                snapParc.forEach(doc => {
-                    parcelados.push({ id: doc.id, ...doc.data() });
-                });
+            <!-- TAB: PAGAR -->
+            <div id="tab-pagar" class="tab-content hidden bg-white rounded-2xl p-6 shadow-sm border">
+                <div class="flex flex-wrap gap-3 mb-4 justify-between items-center">
+                    <div class="flex gap-2">
+                        <select id="filtroMesPagar" class="border p-2 rounded-xl text-sm"><option value="">Todos os Meses</option><option value="jan">Jan</option><option value="fev">Fev</option><option value="mar">Mar</option><option value="abr">Abr</option><option value="mai">Mai</option><option value="jun">Jun</option><option value="jul">Jul</option><option value="ago">Ago</option><option value="set">Set</option><option value="out">Out</option><option value="nov">Nov</option><option value="dez">Dez</option></select>
+                        <select id="filtroStatusPagar" class="border p-2 rounded-xl text-sm"><option value="">Não Pagas</option><option value="PENDENTE">Pendentes</option><option value="EM ATRASO">Em Atraso</option><option value="PAGO">Pagas</option></select>
+                    </div>
+                    <span id="total-pagar-count" class="text-sm text-slate-400 font-medium">0 itens</span>
+                </div>
+                <div id="tabela-pagar-container" class="overflow-x-auto"></div>
+            </div>
 
-                dadosFinanceiros = simples;
-                parcelamentos = parcelados;
-                return { simples, parcelados };
-            } catch (e) {
-                console.error("Erro ao carregar dados:", e);
-                throw e;
+            <!-- TAB: RECEBER -->
+            <div id="tab-receber" class="tab-content hidden bg-white rounded-2xl p-6 shadow-sm border">
+                <div class="flex flex-wrap gap-3 mb-4 justify-between items-center">
+                    <div class="flex gap-2">
+                        <select id="filtroMesReceber" class="border p-2 rounded-xl text-sm"><option value="">Todos os Meses</option><option value="jan">Jan</option><option value="fev">Fev</option><option value="mar">Mar</option><option value="abr">Abr</option><option value="mai">Mai</option><option value="jun">Jun</option><option value="jul">Jul</option><option value="ago">Ago</option><option value="set">Set</option><option value="out">Out</option><option value="nov">Nov</option><option value="dez">Dez</option></select>
+                        <select id="filtroStatusReceber" class="border p-2 rounded-xl text-sm"><option value="">Não Recebidas</option><option value="PENDENTE">Pendentes</option><option value="EM ATRASO">Em Atraso</option><option value="PAGO">Recebidas</option></select>
+                    </div>
+                    <span id="total-receber-count" class="text-sm text-slate-400 font-medium">0 itens</span>
+                </div>
+                <div id="tabela-receber-container" class="overflow-x-auto"></div>
+            </div>
+
+            <!-- TAB: PARCELAS -->
+            <div id="tab-parcelas" class="tab-content hidden bg-white rounded-2xl p-6 shadow-sm border">
+                <div class="text-right text-sm text-slate-400 mb-2 font-medium" id="total-parcelas-count">0 parcelas</div>
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead class="bg-slate-50 text-slate-500 text-sm border-b">
+                            <tr><th class="p-3 text-left">TIPO</th><th class="p-3 text-left">OPERAÇÃO</th><th class="p-3 text-left">COMPRA</th><th class="p-3 text-center">PARCELA</th><th class="p-3 text-left">VENCIMENTO</th><th class="p-3 text-left">VALOR</th><th class="p-3 text-left">STATUS</th><th class="p-3 text-center">AÇÕES</th></tr>
+                        </thead>
+                        <tbody id="tabela-parcelas"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- TAB: CALENDÁRIO -->
+            <div id="tab-calendario" class="tab-content hidden space-y-4">
+                <div class="flex justify-center items-center gap-4 bg-white p-4 rounded-2xl border shadow-sm">
+                    <button onclick="mudarAnoCalendario(-1)" class="p-2 border rounded-xl hover:bg-slate-50"><i class="fa-solid fa-chevron-left"></i></button>
+                    <span id="cal-ano-display" class="font-bold text-lg text-slate-700">2026</span>
+                    <button onclick="mudarAnoCalendario(1)" class="p-2 border rounded-xl hover:bg-slate-50"><i class="fa-solid fa-chevron-right"></i></button>
+                </div>
+                <div id="calendario-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            </div>
+
+            <!-- TAB: HISTÓRICO PAGOS -->
+            <div id="tab-historico-pagos" class="tab-content hidden bg-white rounded-2xl p-6 shadow-sm border space-y-4">
+                <div class="flex flex-wrap gap-3 items-end bg-slate-50 p-4 rounded-xl">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 mb-1">INÍCIO</label>
+                        <input type="date" id="histPagosDataIni" class="border p-2 rounded-xl text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 mb-1">FIM</label>
+                        <input type="date" id="histPagosDataFim" class="border p-2 rounded-xl text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 mb-1">TIPO</label>
+                        <select id="histPagosTipo" class="border p-2 rounded-xl text-sm bg-white"><option value="todos">Todos</option><option value="simples">Avulsos</option><option value="parcela">Parcelados</option></select>
+                    </div>
+                    <button onclick="aplicarFiltroHistoricoPagos()" class="bg-slate-700 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-slate-800">Filtrar</button>
+                    <button onclick="limparFiltroHistoricoPagos()" class="btn-limpar text-slate-400 hover:text-slate-600 text-sm font-medium">Limpar</button>
+                </div>
+                <div class="flex justify-between items-center px-1">
+                    <span id="total-pagos-valor" class="font-bold text-slate-700">Total: R$ 0,00</span>
+                    <div class="flex gap-1.5">
+                        <button onclick="exportarHistoricoPagosPDF()" class="btn-pdf bg-slate-100 hover:bg-slate-200 p-2 rounded-lg text-xs text-slate-600 font-semibold"><i class="fa-solid fa-file-pdf"></i> PDF</button>
+                        <button onclick="exportarHistoricoPagosEmail()" class="btn-email bg-slate-100 hover:bg-slate-200 p-2 rounded-lg text-xs text-slate-600 font-semibold"><i class="fa-solid fa-envelope"></i> E-mail</button>
+                        <button onclick="exportarHistoricoPagosWhatsApp()" class="btn-whatsapp bg-slate-100 hover:bg-slate-200 p-2 rounded-lg text-xs text-slate-600 font-semibold"><i class="fa-brand fa-whatsapp text-emerald-600"></i> WhatsApp</button>
+                    </div>
+                </div>
+                <div id="historico-pagos-container" class="overflow-x-auto"></div>
+            </div>
+
+            <!-- TAB: HISTÓRICO RECEBIDOS -->
+            <div id="tab-historico-recebidos" class="tab-content hidden bg-white rounded-2xl p-6 shadow-sm border space-y-4">
+                <div class="flex flex-wrap gap-3 items-end bg-slate-50 p-4 rounded-xl">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 mb-1">INÍCIO</label>
+                        <input type="date" id="histRecebidosDataIni" class="border p-2 rounded-xl text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 mb-1">FIM</label>
+                        <input type="date" id="histRecebidosDataFim" class="border p-2 rounded-xl text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 mb-1">TIPO</label>
+                        <select id="histRecebidosTipo" class="border p-2 rounded-xl text-sm bg-white"><option value="todos">Todos</option><option value="simples">Avulsos</option><option value="parcela">Parcelados</option></select>
+                    </div>
+                    <button onclick="aplicarFiltroHistoricoRecebidos()" class="bg-slate-700 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-slate-800">Filtrar</button>
+                    <button onclick="limparFiltroHistoricoRecebidos()" class="btn-limpar text-slate-400 hover:text-slate-600 text-sm font-medium">Limpar</button>
+                </div>
+                <div class="flex justify-between items-center px-1">
+                    <span id="total-recebidos-valor" class="font-bold text-slate-700">Total: R$ 0,00</span>
+                    <div class="flex gap-1.5">
+                        <button onclick="exportarHistoricoRecebidosPDF()" class="btn-pdf bg-slate-100 hover:bg-slate-200 p-2 rounded-lg text-xs text-slate-600 font-semibold"><i class="fa-solid fa-file-pdf"></i> PDF</button>
+                        <button onclick="exportarHistoricoRecebidosEmail()" class="btn-email bg-slate-100 hover:bg-slate-200 p-2 rounded-lg text-xs text-slate-600 font-semibold"><i class="fa-solid fa-envelope"></i> E-mail</button>
+                        <button onclick="exportarHistoricoRecebidosWhatsApp()" class="btn-whatsapp bg-slate-100 hover:bg-slate-200 p-2 rounded-lg text-xs text-slate-600 font-semibold"><i class="fa-brand fa-whatsapp text-emerald-600"></i> WhatsApp</button>
+                    </div>
+                </div>
+                <div id="historico-recebidos-container" class="overflow-x-auto"></div>
+            </div>
+
+            <!-- TAB: RELATÓRIO -->
+            <div id="tab-relatorio" class="tab-content hidden bg-white rounded-2xl p-6 shadow-sm border space-y-4">
+                <div class="flex gap-2 bg-slate-50 p-4 rounded-xl max-w-xs">
+                    <select id="mesInicio" class="border p-2 rounded-xl text-sm bg-white w-full"><option value="0">Jan</option><option value="1">Fev</option><option value="11">Dez</option></select>
+                    <select id="mesFim" class="border p-2 rounded-xl text-sm bg-white w-full"><option value="11" selected>Dez</option></select>
+                </div>
+                <table class="w-full text-sm">
+                    <thead class="bg-slate-50 text-slate-500 border-b">
+                        <tr><th class="p-3 text-left">MÊS</th><th class="p-3 text-left">DESPESAS</th><th class="p-3 text-left">RECEITAS</th><th class="p-3 text-left">SALDO</th></tr>
+                    </thead>
+                    <tbody id="corpo-relatorio-filtrado"></tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+    <!-- ================= MODAL: NOVO LANÇAMENTO ================= -->
+    <div id="modalForm" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+            <div class="flex justify-between items-center"><h3 id="modal-title" class="font-bold text-lg">Novo Lançamento</h3><button onclick="closeModal()" class="close text-slate-400 text-xl font-bold">&times;</button></div>
+            <form id="financeForm" class="space-y-3">
+                <input type="hidden" id="form-id">
+                <div><label class="block text-xs font-semibold mb-1">Fluxo</label><select id="form-fluxo" class="w-full border p-2 rounded-xl"><option value="pagar">🔻 Despesa (A Pagar)</option><option value="receber">🟢 Receita (A Receber)</option></select></div>
+                <div><label class="block text-xs font-semibold mb-1">Nome/Descrição</label><input type="text" id="form-nome" required class="w-full border p-2 rounded-xl"></div>
+                <div><label class="block text-xs font-semibold mb-1">Valor</label><input type="number" step="0.01" id="form-valor" required class="w-full border p-2 rounded-xl"></div>
+                <div><label class="block text-xs font-semibold mb-1">Vencimento</label><input type="date" id="form-data" required class="w-full border p-2 rounded-xl"></div>
+                <div><label class="block text-xs font-semibold mb-1">Categoria</label><input type="text" id="form-tipo" class="w-full border p-2 rounded-xl"></div>
+                <div><label class="block text-xs font-semibold mb-1">Status Inicial</label><select id="form-status" class="w-full border p-2 rounded-xl"><option value="PENDENTE">PENDENTE</option><option value="PAGO">PAGO / RECEBIDO</option></select></div>
+                <button type="submit" class="w-full bg-rose-500 text-white py-2 rounded-xl font-semibold">Salvar</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= MODAL: PARCELAMENTO ================= -->
+    <div id="modalParcelamento" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+            <div class="flex justify-between items-center"><h3 class="font-bold text-lg">Registrar Parcelamento</h3><button onclick="closeParcelamentoModal()" class="close text-slate-400 text-xl font-bold">&times;</button></div>
+            <form id="parcelamentoForm" class="space-y-3">
+                <div><label class="block text-xs font-semibold mb-1">Tipo</label><select id="parc-tipo" class="w-full border p-2 rounded-xl"><option value="pagar">🔻 Compra Parcelada (Despesa)</option><option value="receber">🟢 Venda Parcelada (Receita)</option></select></div>
+                <div><label class="block text-xs font-semibold mb-1">Nome da Operação</label><input type="text" id="parc-nome" required class="w-full border p-2 rounded-xl"></div>
+                <div><label class="block text-xs font-semibold mb-1">Data da Compra</label><input type="date" id="parc-data-compra" required class="w-full border p-2 rounded-xl"></div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div><label class="block text-xs font-semibold mb-1">Nº de Parcelas</label><input type="number" id="parc-numero" required class="w-full border p-2 rounded-xl"></div>
+                    <div><label class="block text-xs font-semibold mb-1">Valor Total</label><input type="number" step="0.01" id="parc-total" required class="w-full border p-2 rounded-xl"></div>
+                </div>
+                <div><label class="block text-xs font-semibold mb-1">Valor Estimado p/ Parcela</label><input type="text" id="parc-valor-calc" readonly class="w-full border p-2 bg-slate-50 text-slate-500 rounded-xl"></div>
+                <div><label class="block text-xs font-semibold mb-1">Primeiro Vencimento</label><input type="date" id="parc-primeiro-venc" required class="w-full border p-2 rounded-xl"></div>
+                <button type="submit" class="w-full bg-slate-900 text-white py-2 rounded-xl font-semibold">Gerar e Salvar</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= SCRIPT LOGIC (FIREBASE CONTROL) ================= -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, query, where, getDocs, setDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        const mesesAbrev = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+        const mesesExtenso = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+
+        function hoje() { const h = new Date(); h.setHours(0,0,0,0); return h; }
+        function stringParaData(s) { return new Date(s + 'T00:00:00'); }
+        function formatarMoeda(v) { return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+        function extrairMesDoVencimento(vencStr) { return mesesAbrev[new Date(vencStr + 'T00:00:00').getMonth()]; }
+        function extrairAnoDoVencimento(vencStr) { return new Date(vencStr + 'T00:00:00').getFullYear(); }
+        function extrairMesNumDoVencimento(vencStr) { return new Date(vencStr + 'T00:00:00').getMonth(); }
+        function formatarDataBR(dataStr) { if (!dataStr) return '—'; return dataStr.split('-').reverse().join('/'); }
+
+        const dataManager = (() => {
+            let currentUser = null; let dadosFinanceiros = []; let parcelamentos = [];
+            const firebaseConfig = {
+                apiKey: "AIzaSyAJYILwg4AV2cj-IABRYdZlKZlyhjNEpH0",
+                authDomain: "ama-financa-pessoais.firebaseapp.com",
+                projectId: "ama-financa-pessoais",
+                storageBucket: "ama-financa-pessoais.firebasestorage.app",
+                messagingSenderId: "204718835981",
+                appId: "1:204718835981:web:35ff9e6597e18690f04844",
+                measurementId: "G-Z8QXGZNRT7"
+            };
+            const app = initializeApp(firebaseConfig); const auth = getAuth(app); const db = getFirestore(app);
+            async function login(email, senha) { const cred = await signInWithEmailAndPassword(auth, email, senha); return cred.user; }
+            async function cadastrar(email, senha) { const cred = await createUserWithEmailAndPassword(auth, email, senha); return cred.user; }
+            async function logout() { await signOut(auth); }
+            function onAuthChange(callback) { onAuthStateChanged(auth, (user) => { currentUser = user; callback(user); }); }
+            function getCurrentUser() { return currentUser; }
+            async function carregarDados() {
+                if (!currentUser) return { simples: [], parcelados: [] };
+                try {
+                    const qSimples = query(collection(db, "lancamentos_simples"), where("userId", "==", currentUser.uid));
+                    const snapSimples = await getDocs(qSimples); const simples = [];
+                    snapSimples.forEach(doc => { simples.push({ id: doc.id, ...doc.data() }); });
+                    const qParc = query(collection(db, "parcelamentos"), where("userId", "==", currentUser.uid));
+                    const snapParc = await getDocs(qParc); const parcelados = [];
+                    snapParc.forEach(doc => { parcelados.push({ id: doc.id, ...doc.data() }); });
+                    dadosFinanceiros = simples; parcelamentos = parcelados; return { simples, parcelados };
+                } catch (e) { console.error(e); throw e; }
             }
-        }
+            async function salvarSimples(id, dados) { if (!currentUser) throw new Error("Não logado"); await setDoc(doc(db, "lancamentos_simples", id), { ...dados, userId: currentUser.uid }, { merge: true }); }
+            async function excluirSimples(id) { if (!currentUser) throw new Error("Não logado"); await deleteDoc(doc(db, "lancamentos_simples", id)); }
+            async function salvarParcelamento(id, dados) { if (!currentUser) throw new Error("Não logado"); await setDoc(doc(db, "parcelamentos", id), { ...dados, userId: currentUser.uid }, { merge: true }); }
+            async function excluirParcelamento(id) { if (!currentUser) throw new Error("Não logado"); await deleteDoc(doc(db, "parcelamentos", id)); }
+            async function atualizarParcela(parcId, parcelaId, status, dataPagamento = null) {
+                if (!currentUser) throw new Error("Não logado"); const parc = parcelamentos.find(p => p.id === parcId); if (!parc) return;
+                const p = parc.parcelas.find(x => x.id === parcelaId); if (!p) return; p.status = status; p.dataPagamento = dataPagamento;
+                await setDoc(doc(db, "parcelamentos", parcId), { parcelas: parc.parcelas }, { merge: true });
+            }
+            function obterTodosFluxos() {
+                const fluxos = [];
+                dadosFinanceiros.forEach(i => { fluxos.push({ ...i, origem: 'simples', mes: extrairMesDoVencimento(i.vencimento), anoVenc: extrairAnoDoVencimento(i.vencimento), mesNum: extrairMesNumDoVencimento(i.vencimento), dataPagamento: i.dataPagamento || null, aba: i.aba || i.tipo }); });
+                parcelamentos.forEach(parc => { parc.parcelas.forEach(p => { fluxos.push({ aba: parc.tipo, valor: p.valor, vencimento: p.vencimento, mes: extrairMesDoVencimento(p.vencimento), anoVenc: extrairAnoDoVencimento(p.vencimento), mesNum: extrairMesNumDoVencimento(p.vencimento), status: p.status, id: p.id, origem: 'parcela', nomeOperacao: parc.nomeOperacao, numeroParcela: p.numero, totalParcelas: parc.parcelas.length, parcelaId: p.id, parcId: parc.id, tipo: 'Parcelado', dataPagamento: p.dataPagamento, nome: `${parc.nomeOperacao} (${p.numero}/${parc.parcelas.length})` }); }); });
+                return fluxos;
+            }
+            function atualizarStatusAutomatico() {
+                const hj = hoje();
+                dadosFinanceiros.forEach(i => { if (i.status !== 'PAGO') i.status = stringParaData(i.vencimento) < hj ? 'EM ATRASO' : 'PENDENTE'; });
+                parcelamentos.forEach(parc => { parc.parcelas.forEach(p => { if (p.status !== 'PAGO') p.status = stringParaData(p.vencimento) < hj ? 'EM ATRASO' : 'PENDENTE'; }); });
+            }
+            return { login, cadastrar, logout, onAuthChange, getCurrentUser, carregarDados, salvarSimples, excluirSimples, salvarParcelamento, excluirParcelamento, atualizarParcela, getDadosSimples: () => dadosFinanceiros, getParcelamentos: () => parcelamentos, obterTodosFluxos, atualizarStatusAutomatico };
+        })();
 
-        async function salvarSimples(id, dados) {
-            if (!currentUser) throw new Error("Usuário não autenticado");
-            await setDoc(doc(db, "lancamentos_simples", id), { ...dados, userId: currentUser.uid }, { merge: true });
-        }
-
-        async function excluirSimples(id) {
-            if (!currentUser) throw new Error("Usuário não autenticado");
-            await deleteDoc(doc(db, "lancamentos_simples", id));
-        }
-
-        async function salvarParcelamento(id, dados) {
-            if (!currentUser) throw new Error("Usuário não autenticado");
-            await setDoc(doc(db, "parcelamentos", id), { ...dados, userId: currentUser.uid }, { merge: true });
-        }
-
-        async function excluirParcelamento(id) {
-            if (!currentUser) throw new Error("Usuário não autenticado");
-            await deleteDoc(doc(db, "parcelamentos", id));
-        }
-
-        async function atualizarParcela(parcId, parcelaId, status, dataPagamento = null) {
-            if (!currentUser) throw new Error("Usuário não autenticado");
-            const parc = parcelamentos.find(p => p.id === parcId);
-            if (!parc) throw new Error("Parcelamento não encontrado");
-            const p = parc.parcelas.find(p => p.id === parcelaId);
-            if (!p) throw new Error("Parcela não encontrada");
-            p.status = status;
-            p.dataPagamento = dataPagamento;
-            await setDoc(doc(db, "parcelamentos", parcId), { parcelas: parc.parcelas }, { merge: true });
-        }
-
-        // ===== Acesso aos dados em cache =====
-        function getDadosSimples() {
-            return dadosFinanceiros;
-        }
-
-        function getParcelamentos() {
-            return parcelamentos;
-        }
-
-        // ===== Processamento unificado =====
-        function obterTodosFluxos() {
-            const fluxos = [];
-            dadosFinanceiros.forEach(i => {
-                fluxos.push({
-                    ...i,
-                    origem: 'simples',
-                    mes: extrairMesDoVencimento(i.vencimento),
-                    anoVenc: extrairAnoDoVencimento(i.vencimento),
-                    mesNum: extrairMesNumDoVencimento(i.vencimento),
-                    dataPagamento: i.dataPagamento || null,
-                    aba: i.aba || i.tipo, 
+        const uiManager = (() => {
+            const DOM = {
+                authScreen: document.getElementById('auth-screen'), appScreen: document.getElementById('app-screen'), authEmail: document.getElementById('auth-email'), authSenha: document.getElementById('auth-senha'), btnAuthSubmit: document.getElementById('btn-auth-submit'), authToggleText: document.getElementById('auth-toggle-text'), pageTitle: document.getElementById('page-title'), nomePessoaDisplay: document.getElementById('nomePessoaDisplay'), kpiPagar: document.getElementById('kpi-pagar'), kpiReceber: document.getElementById('kpi-receber'), kpiBalanco: document.getElementById('kpi-balanco'), kpiAtrasos: document.getElementById('kpi-atrasos'), tabelaPagarContainer: document.getElementById('tabela-pagar-container'), totalPagarCount: document.getElementById('total-pagar-count'), tabelaReceberContainer: document.getElementById('tabela-receber-container'), totalReceberCount: document.getElementById('total-receber-count'), tabelaParcelas: document.getElementById('tabela-parcelas'), totalParcelasCount: document.getElementById('total-parcelas-count'), calendarioContainer: document.getElementById('calendario-container'), calAnoDisplay: document.getElementById('cal-ano-display'), historicoPagosContainer: document.getElementById('historico-pagos-container'), totalPagosValor: document.getElementById('total-pagos-valor'), historicoRecebidosContainer: document.getElementById('historico-recebidos-container'), totalRecebidosValor: document.getElementById('total-recebidos-valor'), corpoRelatorioFiltrado: document.getElementById('corpo-relatorio-filtrado'), filtroMesPagar: document.getElementById('filtroMesPagar'), filtroStatusPagar: document.getElementById('filtroStatusPagar'), filtroMesReceber: document.getElementById('filtroMesReceber'), filtroStatusReceber: document.getElementById('filtroStatusReceber'), mesInicio: document.getElementById('mesInicio'), mesFim: document.getElementById('mesFim'), histPagosDataIni: document.getElementById('histPagosDataIni'), histPagosDataFim: document.getElementById('histPagosDataFim'), histPagosTipo: document.getElementById('histPagosTipo'), histRecebidosDataIni: document.getElementById('histRecebidosDataIni'), histRecebidosDataFim: document.getElementById('histRecebidosDataFim'), histRecebidosTipo: document.getElementById('histRecebidosTipo'), modalForm: document.getElementById('modalForm'), financeForm: document.getElementById('financeForm'), formFluxo: document.getElementById('form-fluxo'), formData: document.getElementById('form-data'), formNome: document.getElementById('form-nome'), formValor: document.getElementById('form-valor'), formTipo: document.getElementById('form-tipo'), formStatus: document.getElementById('form-status'), modalTitle: document.getElementById('modal-title'), modalParcelamento: document.getElementById('modalParcelamento'), parcelamentoForm: document.getElementById('parcelamentoForm'), parcTipo: document.getElementById('parc-tipo'), parcDataCompra: document.getElementById('parc-data-compra'), parcNome: document.getElementById('parc-nome'), parcNumero: document.getElementById('parc-numero'), parcTotal: document.getElementById('parc-total'), parcValorCalc: document.getElementById('parc-valor-calc'), parcPrimeiroVenc: document.getElementById('parc-primeiro-venc')
+            };
+            let estadoUI = { anoCalendario: new Date().getFullYear(), mesesAbertos: new Set([new Date().getMonth()]), chartFluxoInstance: null, chartStatusInstance: null };
+            
+            function initCharts() {
+                const ctxBar = document.getElementById('chartFluxo')?.getContext('2d'); const ctxDonut = document.getElementById('chartStatus')?.getContext('2d');
+                if (ctxBar) { estadoUI.chartFluxoInstance = new Chart(ctxBar, { type: 'bar', data: { labels: mesesExtenso, datasets: [{ label: 'Despesas', backgroundColor: '#f43f5e', data: [] }, { label: 'Receitas', backgroundColor: '#10b981', data: [] }] }, options: { responsive: true, maintainAspectRatio: false } }); }
+                if (ctxDonut) { estadoUI.chartStatusInstance = new Chart(ctxDonut, { type: 'doughnut', data: { labels: ['⚠️ Atraso', '✅ Pago', '🕒 Pendente'], datasets: [{ data: [0,0,0], backgroundColor: ['#f43f5e', '#10b981', '#f59e0b'] }] }, options: { responsive: true, maintainAspectRatio: false } }); }
+            }
+            function renderizarTudo(fluxos) {
+                let pagar = 0, receber = 0, atrasos = 0, pagos = 0, pendentes = 0;
+                fluxos.forEach(f => {
+                    if (f.status === 'PAGO') pagos++; else if (f.status === 'EM ATRASO') atrasos++; else pendentes++;
+                    if (f.status !== 'PAGO') { if (f.aba === 'pagar') pagar += f.valor; else receber += f.valor; }
                 });
-            });
-            parcelamentos.forEach(parc => {
-                parc.parcelas.forEach(p => {
-                    fluxos.push({
-                        aba: parc.tipo,
-                        valor: p.valor,
-                        vencimento: p.vencimento,
-                        mes: extrairMesDoVencimento(p.vencimento),
-                        anoVenc: extrairAnoDoVencimento(p.vencimento),
-                        mesNum: extrairMesNumDoVencimento(p.vencimento),
-                        status: p.status,
-                        id: p.id,
-                        origem: 'parcela',
-                        nomeOperacao: parc.nomeOperacao,
-                        numeroParcela: p.numero,
-                        totalParcelas: parc.parcelas.length,
-                        parcelaId: p.id,
-                        parcId: parc.id,
-                        tipo: 'Parcelado',
-                        dataPagamento: p.dataPagamento,
-                        nome: `${parc.nomeOperacao} (${p.numero}/${parc.parcelas.length})`,
+                if (DOM.kpiPagar) DOM.kpiPagar.innerText = formatarMoeda(pagar);
+                if (DOM.kpiReceber) DOM.kpiReceber.innerText = formatarMoeda(receber);
+                if (DOM.kpiBalanco) { DOM.kpiBalanco.innerText = formatarMoeda(receber - pagar); }
+                if (DOM.kpiAtrasos) DOM.kpiAtrasos.innerText = atrasos;
+                
+                let resumo = Array(12).fill(0).map(() => ({ pagar: 0, receber: 0 }));
+                fluxos.forEach(f => {
+                    if (f.status === 'PAGO' || f.anoVenc !== estadoUI.anoCalendario) return;
+                    const idx = f.mesNum; if (idx >= 0 && idx < 12) { if (f.aba === 'pagar') resumo[idx].pagar += f.valor; else resumo[idx].receber += f.valor; }
+                });
+                if (estadoUI.chartFluxoInstance) { estadoUI.chartFluxoInstance.data.datasets[0].data = resumo.map(r => r.pagar); estadoUI.chartFluxoInstance.data.datasets[1].data = resumo.map(r => r.receber); estadoUI.chartFluxoInstance.update(); }
+                if (estadoUI.chartStatusInstance) { estadoUI.chartStatusInstance.data.datasets[0].data = [atrasos, pagos, pendentes]; estadoUI.chartStatusInstance.update(); }
+                
+                renderizarContas(fluxos); renderizarParcelas(); renderizarCalendario(fluxos); renderizarRelatorio(fluxos); renderizarHistoricoPagos(fluxos); renderizarHistoricoRecebidos(fluxos);
+            }
+            function renderizarContas(fluxos) {
+                const mesFP = DOM.filtroMesPagar?.value; const stFP = DOM.filtroStatusPagar?.value;
+                let itensPagar = fluxos.filter(f => f.aba === 'pagar');
+                if (!stFP) itensPagar = itensPagar.filter(f => f.status !== 'PAGO');
+                if (mesFP) itensPagar = itensPagar.filter(f => f.mes === mesFP);
+                if (stFP) itensPagar = itensPagar.filter(f => f.status === stFP);
+                if (DOM.totalPagarCount) DOM.totalPagarCount.innerText = `${itensPagar.length} itens`;
+                if (DOM.tabelaPagarContainer) DOM.tabelaPagarContainer.innerHTML = itensPagar.length === 0 ? '<div class="p-4 text-slate-400 text-center text-sm">Nenhum registro.</div>' : `<table class="w-full text-sm">${itensPagar.map(f => rowConta(f, 'rose')).join('')}</table>`;
+
+                const mesFR = DOM.filtroMesReceber?.value; const stFR = DOM.filtroStatusReceber?.value;
+                let itensReceber = fluxos.filter(f => f.aba === 'receber');
+                if (!stFR) itensReceber = itensReceber.filter(f => f.status !== 'PAGO');
+                if (mesFR) itensReceber = itensReceber.filter(f => f.mes === mesFR);
+                if (stFR) itensReceber = itensReceber.filter(f => f.status === stFR);
+                if (DOM.totalReceberCount) DOM.totalReceberCount.innerText = `${itensReceber.length} itens`;
+                if (DOM.tabelaReceberContainer) DOM.tabelaReceberContainer.innerHTML = itensReceber.length === 0 ? '<div class="p-4 text-slate-400 text-center text-sm">Nenhum registro.</div>' : `<table class="w-full text-sm">${itensReceber.map(f => rowConta(f, 'emerald')).join('')}</table>`;
+            }
+            function rowConta(f, cor) {
+                const desc = f.origem === 'simples' ? f.nome : `${f.nomeOperacao} (${f.numeroParcela}/${f.totalParcelas})`;
+                const stClass = f.status === 'EM ATRASO' ? 'bg-rose-100 text-rose-700' : f.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700';
+                return `<tr class="border-b hover:bg-slate-50"><td class="p-3">${formatarDataBR(f.vencimento)}</td><td class="p-3 font-medium">${desc}</td><td class="p-3 font-bold text-${cor}-600">${formatarMoeda(f.valor)}</td><td class="p-3"><span class="px-2 py-0.5 rounded-full text-xs font-semibold ${stClass}">${f.status}</span></td><td class="p-3 text-center"><button data-origem="${f.origem}" data-id="${f.id}" data-parcId="${f.parcId || ''}" data-parcelaId="${f.parcelaId || ''}" class="btn-pagar text-emerald-500 mr-2"><i class="fa-solid fa-check-circle"></i></button><button data-origem="${f.origem}" data-id="${f.id}" data-parcId="${f.parcId || ''}" data-parcelaId="${f.parcelaId || ''}" class="btn-excluir text-slate-300 hover:text-rose-500"><i class="fa-regular fa-trash-can"></i></button></td></tr>`;
+            }
+            function renderizarParcelas() {
+                const parcelas = dataManager.getParcelamentos(); let html = '';
+                parcelas.forEach(parc => {
+                    parc.parcelas.forEach(p => {
+                        const stClass = p.status === 'EM ATRASO' ? 'bg-rose-100 text-rose-700' : p.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700';
+                        html += `<tr class="border-b hover:bg-slate-50"><td class="p-3">${parc.tipo === 'pagar' ? '🔻 Débito' : '🟢 Crédito'}</td><td class="p-3 font-medium">${parc.nomeOperacao}</td><td class="p-3">${formatarDataBR(parc.dataCompra)}</td><td class="p-3 text-center">${p.numero}/${parc.parcelas.length}</td><td class="p-3">${formatarDataBR(p.vencimento)}</td><td class="p-3 font-bold">${formatarMoeda(p.valor)}</td><td class="p-3"><span class="px-2 py-0.5 rounded-full text-xs font-semibold ${stClass}">${p.status}</span></td><td class="p-3 text-center"><button data-origem="parcela" data-parcId="${parc.id}" data-parcelaId="${p.id}" class="btn-pagar text-emerald-500 mr-2"><i class="fa-solid fa-check-circle"></i></button><button data-origem="parcela" data-parcId="${parc.id}" data-parcelaId="${p.id}" class="btn-excluir text-slate-300 hover:text-rose-500"><i class="fa-regular fa-trash-can"></i></button></td></tr>`;
                     });
                 });
-            });
-            return fluxos;
-        }
-
-        // ===== Atualização de status automático (atraso/pendente) =====
-        function atualizarStatusAutomatico() {
-            const hj = hoje();
-            dadosFinanceiros.forEach(i => {
-                if (i.status !== 'PAGO') {
-                    i.status = stringParaData(i.vencimento) < hj ? 'EM ATRASO' : 'PENDENTE';
-                }
-            });
-            parcelamentos.forEach(parc => {
-                parc.parcelas.forEach(p => {
-                    if (p.status !== 'PAGO') {
-                        p.status = stringParaData(p.vencimento) < hj ? 'EM ATRASO' : 'PENDENTE';
-                    }
+                if (DOM.tabelaParcelas) DOM.tabelaParcelas.innerHTML = html;
+                if (DOM.totalParcelasCount) DOM.totalParcelasCount.innerText = `${parcelas.length} parcelamentos`;
+            }
+            function renderizarCalendario(fluxos) {
+                if (!DOM.calendarioContainer) return; DOM.calendarioContainer.innerHTML = '';
+                mesesExtenso.forEach((nomeMes, idx) => {
+                    const itensMes = fluxos.filter(f => f.anoVenc === estadoUI.anoCalendario && f.mesNum === idx);
+                    const aberto = estadoUI.mesesAbertos.has(idx); if (itensMes.length === 0 && !aberto) return;
+                    let rowsHtml = itensMes.map(f => `<div class="flex justify-between items-center py-2 border-b text-xs"><div><p class="font-semibold text-slate-700">${f.origem === 'simples' ? f.nome : f.nomeOperacao}</p><p class="text-slate-400">${formatarDataBR(f.vencimento)}</p></div><div class="flex items-center gap-2"><span class="font-bold ${f.aba === 'pagar' ? 'text-rose-600' : 'text-emerald-600'}">${formatarMoeda(f.valor)}</span><button data-origem="${f.origem}" data-id="${f.id}" data-parcId="${f.parcId || ''}" data-parcelaId="${f.parcelaId || ''}" class="btn-pagar text-emerald-500"><i class="fa-solid fa-check-circle"></i></button></div></div>`).join('');
+                    DOM.calendarioContainer.innerHTML += `<div class="bg-white rounded-2xl border shadow-sm overflow-hidden"><div class="mes-header bg-slate-50 p-4 border-b flex justify-between items-center cursor-pointer" data-mes="${idx}"><span class="font-bold text-slate-700">${nomeMes}</span><i class="fa-solid fa-chevron-down text-slate-400 mes-expandir-icon ${aberto ? 'aberto' : ''}"></i></div><div class="mes-body p-4 ${aberto ? 'aberto' : ''}">${rowsHtml || '<p class="text-center text-slate-400 text-xs py-2">Sem contas</p>'}</div></div>`;
                 });
-            });
-        }
-
-        return {
-            login,
-            cadastrar,
-            logout,
-            onAuthChange,
-            getCurrentUser,
-            carregarDados,
-            salvarSimples,
-            excluirSimples,
-            salvarParcelamento,
-            excluirParcelamento,
-            atualizarParcela,
-            getDadosSimples,
-            getParcelamentos,
-            obterTodosFluxos,
-            atualizarStatusAutomatico,
-        };
-    })();
-
-    // ================= GERENCIADOR DE UI (Renderização e DOM) =================
-    const uiManager = (() => {
-        // ===== Referências DOM =====
-        const DOM = {
-            authScreen: document.getElementById('auth-screen'),
-            appScreen: document.getElementById('app-screen'),
-            authEmail: document.getElementById('auth-email'),
-            authSenha: document.getElementById('auth-senha'),
-            btnAuthSubmit: document.getElementById('btn-auth-submit'),
-            authToggleText: document.getElementById('auth-toggle-text'),
-
-            pageTitle: document.getElementById('page-title'),
-            nomePessoaDisplay: document.getElementById('nomePessoaDisplay'),
-            sloganDisplay: document.getElementById('sloganDisplay'),
-            logoIcon: document.getElementById('logoIcon'),
-            logoImage: document.getElementById('logoImage'),
-
-            // KPIs
-            kpiPagar: document.getElementById('kpi-pagar'),
-            kpiReceber: document.getElementById('kpi-receber'),
-            kpiBalanco: document.getElementById('kpi-balanco'),
-            kpiAtrasos: document.getElementById('kpi-atrasos'),
-
-            // Tabelas
-            tabelaPagarContainer: document.getElementById('tabela-pagar-container'),
-            totalPagarCount: document.getElementById('total-pagar-count'),
-            tabelaReceberContainer: document.getElementById('tabela-receber-container'),
-            totalReceberCount: document.getElementById('total-receber-count'),
-            tabelaParcelas: document.getElementById('tabela-parcelas'),
-            totalParcelasCount: document.getElementById('total-parcelas-count'),
-
-            // Calendário
-            calendarioContainer: document.getElementById('calendario-container'),
-            calAnoDisplay: document.getElementById('cal-ano-display'),
-
-            // Histórico
-            historicoPagosContainer: document.getElementById('historico-pagos-container'),
-            totalPagosValor: document.getElementById('total-pagos-valor'),
-            historicoRecebidosContainer: document.getElementById('historico-recebidos-container'),
-            totalRecebidosValor: document.getElementById('total-recebidos-valor'),
-
-            // Relatório
-            corpoRelatorioFiltrado: document.getElementById('corpo-relatorio-filtrado'),
-
-            // Filtros
-            filtroMesPagar: document.getElementById('filtroMesPagar'),
-            filtroStatusPagar: document.getElementById('filtroStatusPagar'),
-            ordenarPagar: document.getElementById('ordenarPagar'),
-            filtroMesReceber: document.getElementById('filtroMesReceber'),
-            filtroStatusReceber: document.getElementById('filtroStatusReceber'),
-            ordenarReceber: document.getElementById('ordenarReceber'),
-            mesInicio: document.getElementById('mesInicio'),
-            mesFim: document.getElementById('mesFim'),
-
-            // Histórico filtros
-            histPagosDataIni: document.getElementById('histPagosDataIni'),
-            histPagosDataFim: document.getElementById('histPagosDataFim'),
-            histPagosTipo: document.getElementById('histPagosTipo'),
-            histRecebidosDataIni: document.getElementById('histRecebidosDataIni'),
-            histRecebidosDataFim: document.getElementById('histRecebidosDataFim'),
-            histRecebidosTipo: document.getElementById('histRecebidosTipo'),
-
-            // Modais
-            modalForm: document.getElementById('modalForm'),
-            financeForm: document.getElementById('financeForm'),
-            formFluxo: document.getElementById('form-fluxo'),
-            formData: document.getElementById('form-data'),
-            formNome: document.getElementById('form-nome'),
-            formValor: document.getElementById('form-valor'),
-            formTipo: document.getElementById('form-tipo'),
-            formStatus: document.getElementById('form-status'),
-            modalTitle: document.getElementById('modal-title'),
-
-            modalParcelamento: document.getElementById('modalParcelamento'),
-            parcelamentoForm: document.getElementById('parcelamentoForm'),
-            parcTipo: document.getElementById('parc-tipo'),
-            parcDataCompra: document.getElementById('parc-data-compra'),
-            parcNome: document.getElementById('parc-nome'),
-            parcNumero: document.getElementById('parc-numero'),
-            parcTotal: document.getElementById('parc-total'),
-            parcValorCalc: document.getElementById('parc-valor-calc'),
-            parcPrimeiroVenc: document.getElementById('parc-primeiro-venc'),
-        };
-
-        // ===== Estado de UI =====
-        let estadoUI = {
-            anoCalendario: new Date().getFullYear(),
-            mesesAbertos: new Set([new Date().getMonth()]),
-            chartFluxoInstance: null,
-            chartStatusInstance: null,
-        };
-
-        // ===== Inicialização dos gráficos =====
-        function initCharts() {
-            const ctxBar = document.getElementById('chartFluxo')?.getContext('2d');
-            const ctxDonut = document.getElementById('chartStatus')?.getContext('2d');
-
-            if (ctxBar) {
-                estadoUI.chartFluxoInstance = new Chart(ctxBar, {
-                    type: 'bar',
-                    data: {
-                        labels: mesesExtenso,
-                        datasets: [
-                            { label: 'Despesas (Pagar)', backgroundColor: '#f43f5e', borderRadius: 8, data: [] },
-                            { label: 'Receitas (Receber)', backgroundColor: '#10b981', borderRadius: 8, data: [] }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { position: 'bottom' } },
-                        scales: { y: { beginAtZero: true } }
-                    }
-                });
+                if (DOM.calAnoDisplay) DOM.calAnoDisplay.innerText = estadoUI.anoCalendario;
             }
-
-            if (ctxDonut) {
-                estadoUI.chartStatusInstance = new Chart(ctxDonut, {
-                    type: 'doughnut',
-                    data: {
-                        labels: ['⚠️ Atraso', '✅ Pago', '🕒 Pendente'],
-                        datasets: [{ data: [0, 0, 0], backgroundColor: ['#f43f5e', '#10b981', '#f59e0b'], cutout: '65%' }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { position: 'bottom' } }
-                    }
-                });
-            }
-        }
-
-        // ===== Renderização principal =====
-        function renderizarTudo(fluxos) {
-            // KPIs
-            let totalPagar = 0,
-                totalReceber = 0,
-                atrasos = 0,
-                pagos = 0,
-                pendentes = 0;
-            fluxos.forEach(f => {
-                if (f.status === 'PAGO') pagos++;
-                else if (f.status === 'EM ATRASO') atrasos++;
-                else pendentes++;
-
-                if (f.status !== 'PAGO') {
-                    if (f.aba === 'pagar') totalPagar += f.valor;
-                    else totalReceber += f.valor;
+            function renderizarRelatorio(fluxos) {
+                let resumo = Array(12).fill(0).map(() => ({ pagar: 0, receber: 0 }));
+                fluxos.forEach(f => { if (f.anoVenc === estadoUI.anoCalendario) { const idx = f.mesNum; if (idx >= 0 && idx < 12) { if (f.aba === 'pagar') resumo[idx].pagar += f.valor; else resumo[idx].receber += f.valor; } } });
+                let html = '';
+                for (let i = 0; i < 12; i++) {
+                    const saldo = resumo[i].receber - resumo[i].pagar;
+                    html += `<tr class="border-b"><td class="p-3 font-semibold">${mesesExtenso[i]}</td><td class="p-3 text-rose-500">${formatarMoeda(resumo[i].pagar)}</td><td class="p-3 text-emerald-600">${formatarMoeda(resumo[i].receber)}</td><td class="p-3 font-bold ${saldo >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${formatarMoeda(saldo)}</td></tr>`;
                 }
-            });
-
-            if (DOM.kpiPagar) DOM.kpiPagar.innerText = formatarMoeda(totalPagar);
-            if (DOM.kpiReceber) DOM.kpiReceber.innerText = formatarMoeda(totalReceber);
-            const bal = totalReceber - totalPagar;
-            if (DOM.kpiBalanco) {
-                DOM.kpiBalanco.innerText = formatarMoeda(bal);
-                DOM.kpiBalanco.className = `text-2xl font-bold mt-1 ${bal >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+                if (DOM.corpoRelatorioFiltrado) DOM.corpoRelatorioFiltrado.innerHTML = html;
             }
-            if (DOM.kpiAtrasos) DOM.kpiAtrasos.innerText = atrasos;
-
-            // Gráficos
-            let resumo = Array(12).fill(0).map(() => ({ pagar: 0, receber: 0 }));
-            fluxos.forEach(f => {
-                if (f.status === 'PAGO' || f.anoVenc !== estadoUI.anoCalendario) return;
-                const idx = f.mesNum;
-                if (idx >= 0 && idx < 12) {
-                    if (f.aba === 'pagar') resumo[idx].pagar += f.valor;
-                    else resumo[idx].receber += f.valor;
-                }
-            });
-
-            if (estadoUI.chartFluxoInstance) {
-                estadoUI.chartFluxoInstance.data.datasets[0].data = resumo.map(r => r.pagar);
-                estadoUI.chartFluxoInstance.data.datasets[1].data = resumo.map(r => r.receber);
-                estadoUI.chartFluxoInstance.update();
+            function renderizarHistoricoPagos(fluxos) {
+                let itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
+                if (DOM.historicoPagosContainer) DOM.historicoPagosContainer.innerHTML = `<table class="w-full text-left">${itens.map(i => `<tr class="border-b text-sm"><td class="p-3">${formatarDataBR(i.vencimento)}</td><td class="p-3 font-medium">${i.nome}</td><td class="p-3 font-bold text-rose-600">${formatarMoeda(i.valor)}</td></tr>`).join('')}</table>`;
+                if (DOM.totalPagosValor) DOM.totalPagosValor.innerText = `Total: ${formatarMoeda(itens.reduce((s,x)=>s+x.valor,0))}`;
             }
-            if (estadoUI.chartStatusInstance) {
-                estadoUI.chartStatusInstance.data.datasets[0].data = [atrasos, pagos, pendentes];
-                estadoUI.chartStatusInstance.update();
+            function renderizarHistoricoRecebidos(fluxos) {
+                let itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
+                if (DOM.historicoRecebidosContainer) DOM.historicoRecebidosContainer.innerHTML = `<table class="w-full text-left">${itens.map(i => `<tr class="border-b text-sm"><td class="p-3">${formatarDataBR(i.vencimento)}</td><td class="p-3 font-medium">${i.nome}</td><td class="p-3 font-bold text-emerald-600">${formatarMoeda(i.valor)}</td></tr>`).join('')}</table>`;
+                if (DOM.totalRecebidosValor) DOM.totalRecebidosValor.innerText = `Total: ${formatarMoeda(itens.reduce((s,x)=>s+x.valor,0))}`;
             }
-
-            // Tabelas
-            renderizarContas(fluxos);
-            renderizarParcelas();
-            renderizarCalendario(fluxos);
-            renderizarRelatorio(fluxos);
-            renderizarHistoricoPagos(fluxos);
-            renderizarHistoricoRecebidos(fluxos);
-        }
-
-        // ===== Contas a Pagar/Receber =====
-        function renderizarContas(fluxos) {
-            // Pagar
-            const mesFP = DOM.filtroMesPagar?.value;
-            const stFP = DOM.filtroStatusPagar?.value;
-            let itensPagar = fluxos.filter(f => f.aba === 'pagar');
-            if (!stFP) itensPagar = itensPagar.filter(f => f.status !== 'PAGO');
-            if (mesFP) itensPagar = itensPagar.filter(f => f.mes === mesFP);
-            if (stFP) itensPagar = itensPagar.filter(f => f.status === stFP);
-
-            if (DOM.totalPagarCount) DOM.totalPagarCount.innerText = `${itensPagar.length} itens`;
-            if (DOM.tabelaPagarContainer) {
-                DOM.tabelaPagarContainer.innerHTML = itensPagar.length === 0 ?
-                    '<div class="text-center p-8 text-slate-400">Nenhuma conta encontrada.</div>' :
-                    `<table class="w-full"><tbody>${itensPagar.map(f => rowConta(f, 'rose')).join('')}</tbody></table>`;
+            function abrirModal(e) { if(DOM.modalForm) DOM.modalForm.classList.remove('hidden'); }
+            function fecharModal() { if(DOM.modalForm) DOM.modalForm.classList.add('hidden'); DOM.financeForm?.reset(); }
+            function abrirParcelamentoModal() { if(DOM.modalParcelamento) DOM.modalParcelamento.classList.remove('hidden'); }
+            function fecharParcelamentoModal() { if(DOM.modalParcelamento) DOM.modalParcelamento.classList.add('hidden'); DOM.parcelamentoForm?.reset(); }
+            function switchTab(tab) {
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.replace('block', 'hidden'));
+                document.getElementById(`tab-${tab}`)?.classList.replace('hidden', 'block');
+                if (DOM.pageTitle) DOM.pageTitle.innerText = tab.toUpperCase();
             }
-
-            // Receber
-            const mesFR = DOM.filtroMesReceber?.value;
-            const stFR = DOM.filtroStatusReceber?.value;
-            let itensReceber = fluxos.filter(f => f.aba === 'receber');
-            if (!stFR) itensReceber = itensReceber.filter(f => f.status !== 'PAGO');
-            if (mesFR) itensReceber = itensReceber.filter(f => f.mes === mesFR);
-            if (stFR) itensReceber = itensReceber.filter(f => f.status === stFR);
-
-            if (DOM.totalReceberCount) DOM.totalReceberCount.innerText = `${itensReceber.length} itens`;
-            if (DOM.tabelaReceberContainer) {
-                DOM.tabelaReceberContainer.innerHTML = itensReceber.length === 0 ?
-                    '<div class="text-center p-8 text-slate-400">Nenhuma conta encontrada.</div>' :
-                    `<table class="w-full"><tbody>${itensReceber.map(f => rowConta(f, 'emerald')).join('')}</tbody></table>`;
-            }
-        }
-
-        function rowConta(f, cor) {
-            const desc = f.origem === 'simples' ? f.nome : `${f.nomeOperacao} (${f.numeroParcela}/${f.totalParcelas})`;
-            const stClass = f.status === 'EM ATRASO' ? 'bg-rose-100 text-rose-700 font-bold' :
-                f.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700' :
-                'bg-amber-100 text-amber-700';
-            const valorCor = cor === 'rose' ? 'text-rose-600' : 'text-emerald-600';
-            return `<tr class="border-b hover:bg-slate-50 text-sm">
-                <td class="p-3">${formatarDataBR(f.vencimento)}</td>
-                <td class="p-3 font-semibold">${desc}</td>
-                <td class="p-3 font-bold ${valorCor}">${formatarMoeda(f.valor)}</td>
-                <td class="p-3"><span class="px-2 py-1 rounded-full text-xs ${stClass}">${f.status}</span></td>
-                <td class="p-3 text-center table-row-action">
-                    <button data-origem="${f.origem}" data-id="${f.id}" data-parcId="${f.parcId || ''}" data-parcelaId="${f.parcelaId || ''}" class="btn-pagar text-emerald-500 mx-1"><i class="fa-solid fa-check-circle"></i></button>
-                    <button data-origem="${f.origem}" data-id="${f.id}" data-parcId="${f.parcId || ''}" data-parcelaId="${f.parcelaId || ''}" class="btn-excluir text-slate-400 mx-1"><i class="fa-regular fa-trash-can"></i></button>
-                </td>
-            </tr>`;
-        }
-
-        // ===== Parcelas =====
-        function renderizarParcelas() {
-            const parcelas = dataManager.getParcelamentos();
-            let total = 0;
-            let html = '';
-            parcelas.forEach(parc => {
-                parc.parcelas.forEach(p => {
-                    total++;
-                    const stClass = p.status === 'EM ATRASO' ? 'bg-rose-100 text-rose-700 font-bold' :
-                        p.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700' :
-                        'bg-amber-100 text-amber-700';
-                    html += `<tr class="border-b hover:bg-slate-50 text-sm">
-                        <td class="p-3">${parc.tipo === 'pagar' ? '🔻 Débito' : '🟢 Crédito'}</td>
-                        <td class="p-3 font-semibold">${parc.nomeOperacao}</td>
-                        <td class="p-3">${formatarDataBR(parc.dataCompra)}</td>
-                        <td class="p-3 text-center">${p.numero}/${parc.parcelas.length}</td>
-                        <td class="p-3">${formatarDataBR(p.vencimento)}</td>
-                        <td class="p-3 font-bold">${formatarMoeda(p.valor)}</td>
-                        <td class="p-3"><span class="px-2 py-1 rounded-full text-xs ${stClass}">${p.status}</span></td>
-                        <td class="p-3 text-center table-row-action">
-                            <button data-origem="parcela" data-parcId="${parc.id}" data-parcelaId="${p.id}" class="btn-pagar text-emerald-500 mx-1"><i class="fa-solid fa-check-circle"></i></button>
-                            <button data-origem="parcela" data-parcId="${parc.id}" data-parcelaId="${p.id}" class="btn-excluir text-slate-400 mx-1"><i class="fa-regular fa-trash-can"></i></button>
-                        </td>
-                    </tr>`;
-                });
-            });
-            if (DOM.tabelaParcelas) DOM.tabelaParcelas.innerHTML = html;
-            if (DOM.totalParcelasCount) DOM.totalParcelasCount.innerText = total;
-        }
-
-        // ===== Calendário =====
-        function renderizarCalendario(fluxos) {
-            const container = DOM.calendarioContainer;
-            if (!container) return;
-            container.innerHTML = '';
-
-            mesesExtenso.forEach((nomeMes, idx) => {
-                const itensMes = fluxos.filter(f => f.anoVenc === estadoUI.anoCalendario && f.mesNum === idx);
-                const aberto = estadoUI.mesesAbertos.has(idx);
-
-                if (itensMes.length === 0 && !aberto) return;
-
-                let rowsHtml = itensMes.map(f => {
-                    const valorCor = f.aba === 'pagar' ? 'text-rose-600' : 'text-emerald-600';
-                    return `<div class="item-row text-sm">
-                        <div>
-                            <span class="font-semibold text-slate-700">${f.origem === 'simples' ? f.nome : f.nomeOperacao}</span>
-                            <p class="text-xs text-slate-400">${formatarDataBR(f.vencimento)} ${f.origem === 'parcela' ? `(${f.numeroParcela}/${f.totalParcelas})` : ''}</p>
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <span class="font-bold ${valorCor}">${formatarMoeda(f.valor)}</span>
-                            <button data-origem="${f.origem}" data-id="${f.id}" data-parcId="${f.parcId || ''}" data-parcelaId="${f.parcelaId || ''}" class="btn-pagar text-emerald-500"><i class="fa-solid fa-check-circle"></i></button>
-                        </div>
-                    </div>`;
-                }).join('');
-
-                container.innerHTML += `
-                    <div class="mes-card">
-                        <div class="mes-header bg-slate-50 border-b" data-mes="${idx}">
-                            <span class="font-bold text-slate-700">${nomeMes}</span>
-                            <i class="fa-solid fa-chevron-down mes-expandir-icon ${aberto ? 'aberto' : ''}"></i>
-                        </div>
-                        <div class="mes-body ${aberto ? 'aberto' : ''}">
-                            ${rowsHtml || '<p class="p-4 text-xs text-slate-400 text-center">Nenhum registro</p>'}
-                        </div>
-                    </div>`;
-            });
-
-            // Atualizar ano
-            if (DOM.calAnoDisplay) DOM.calAnoDisplay.innerText = estadoUI.anoCalendario;
-        }
-
-        // ===== Relatório =====
-        function renderizarRelatorio(fluxos) {
-            let resumo = Array(12).fill(0).map(() => ({ pagar: 0, receber: 0 }));
-            fluxos.forEach(f => {
-                if (f.anoVenc === estadoUI.anoCalendario) {
-                    const idx = f.mesNum;
-                    if (idx >= 0 && idx < 12) {
-                        if (f.aba === 'pagar') resumo[idx].pagar += f.valor;
-                        else resumo[idx].receber += f.valor;
-                    }
-                }
-            });
-
-            const ini = parseInt(DOM.mesInicio?.value || 0);
-            const fim = parseInt(DOM.mesFim?.value || 11);
-            let html = '';
-            for (let i = ini; i <= fim; i++) {
-                const r = resumo[i];
-                const saldo = r.receber - r.pagar;
-                html += `<tr class="border-b text-sm">
-                    <td class="p-3 font-semibold">${mesesExtenso[i]}</td>
-                    <td class="p-3 text-rose-500">${formatarMoeda(r.pagar)}</td>
-                    <td class="p-3 text-emerald-600">${formatarMoeda(r.receber)}</td>
-                    <td class="p-3 font-bold ${saldo >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${formatarMoeda(saldo)}</td>
-                </tr>`;
-            }
-            if (DOM.corpoRelatorioFiltrado) DOM.corpoRelatorioFiltrado.innerHTML = html;
-        }
-
-        // ===== Histórico =====
-        function renderizarHistoricoPagos(fluxos) {
-            let itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-            const dataIni = DOM.histPagosDataIni?.value;
-            const dataFim = DOM.histPagosDataFim?.value;
-            const tipoFiltro = DOM.histPagosTipo?.value;
-
-            if (dataIni) itens = itens.filter(i => stringParaData(i.vencimento) >= stringParaData(dataIni));
-            if (dataFim) itens = itens.filter(i => stringParaData(i.vencimento) <= stringParaData(dataFim));
-            if (tipoFiltro === 'simples') itens = itens.filter(i => i.origem === 'simples');
-            if (tipoFiltro === 'parcela') itens = itens.filter(i => i.origem === 'parcela');
-
-            itens.sort((a, b) => stringParaData(b.vencimento) - stringParaData(a.vencimento));
-
-            const total = itens.reduce((s, i) => s + i.valor, 0);
-            if (DOM.totalPagosValor) DOM.totalPagosValor.innerHTML = `Total: ${formatarMoeda(total)}`;
-
-            if (!DOM.historicoPagosContainer) return;
-
-            if (itens.length === 0) {
-                DOM.historicoPagosContainer.innerHTML = '<div class="text-center p-8 text-slate-400">Nenhum pagamento registrado no período.</div>';
-                return;
-            }
-
-            let html = `<table class="w-full text-sm">
-                <thead class="bg-slate-50 text-slate-500">
-                    <tr><th class="p-3 text-left">VENCIMENTO</th><th class="p-3 text-left">DESCRIÇÃO</th><th class="p-3 text-left">DATA PAGAMENTO</th><th class="p-3 text-right">VALOR</th></tr>
-                </thead><tbody>`;
-            itens.forEach(i => {
-                const desc = i.origem === 'simples' ? i.nome : `${i.nomeOperacao} (${i.numeroParcela}/${i.totalParcelas})`;
-                const dataPag = i.dataPagamento ? formatarDataBR(i.dataPagamento) : '—';
-                html += `<tr class="border-b hover:bg-slate-50">
-                    <td class="p-3">${formatarDataBR(i.vencimento)}</td>
-                    <td class="p-3 font-medium">${desc}</td>
-                    <td class="p-3">${dataPag}</td>
-                    <td class="p-3 text-right font-bold text-emerald-600">${formatarMoeda(i.valor)}</td>
-                </tr>`;
-            });
-            html += `</tbody></table>`;
-            DOM.historicoPagosContainer.innerHTML = html;
-        }
-
-        function renderizarHistoricoRecebidos(fluxos) {
-            let itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-            const dataIni = DOM.histRecebidosDataIni?.value;
-            const dataFim = DOM.histRecebidosDataFim?.value;
-            const tipoFiltro = DOM.histRecebidosTipo?.value;
-
-            if (dataIni) itens = itens.filter(i => stringParaData(i.vencimento) >= stringParaData(dataIni));
-            if (dataFim) itens = itens.filter(i => stringParaData(i.vencimento) <= stringParaData(dataFim));
-            if (tipoFiltro === 'simples') itens = itens.filter(i => i.origem === 'simples');
-            if (tipoFiltro === 'parcela') itens = itens.filter(i => i.origem === 'parcela');
-
-            itens.sort((a, b) => stringParaData(b.vencimento) - stringParaData(a.vencimento));
-
-            const total = itens.reduce((s, i) => s + i.valor, 0);
-            if (DOM.totalRecebidosValor) DOM.totalRecebidosValor.innerHTML = `Total: ${formatarMoeda(total)}`;
-
-            if (!DOM.historicoRecebidosContainer) return;
-
-            if (itens.length === 0) {
-                DOM.historicoRecebidosContainer.innerHTML = '<div class="text-center p-8 text-slate-400">Nenhum recebimento registrado no período.</div>';
-                return;
-            }
-
-            let html = `<table class="w-full text-sm">
-                <thead class="bg-slate-50 text-slate-500">
-                    <tr><th class="p-3 text-left">VENCIMENTO</th><th class="p-3 text-left">DESCRIÇÃO</th><th class="p-3 text-left">DATA RECEBIMENTO</th><th class="p-3 text-right">VALOR</th></tr>
-                </thead><tbody>`;
-            itens.forEach(i => {
-                const desc = i.origem === 'simples' ? i.nome : `${i.nomeOperacao} (${i.numeroParcela}/${i.totalParcelas})`;
-                const dataPag = i.dataPagamento ? formatarDataBR(i.dataPagamento) : '—';
-                html += `<tr class="border-b hover:bg-slate-50">
-                    <td class="p-3">${formatarDataBR(i.vencimento)}</td>
-                    <td class="p-3 font-medium">${desc}</td>
-                    <td class="p-3">${dataPag}</td>
-                    <td class="p-3 text-right font-bold text-emerald-600">${formatarMoeda(i.valor)}</td>
-                </tr>`;
-            });
-            html += `</tbody></table>`;
-            DOM.historicoRecebidosContainer.innerHTML = html;
-        }
-
-        // ===== Funções auxiliares para exportação =====
-        function gerarTextoHistorico(itens, titulo) {
-            let texto = `${titulo}\n`;
-            texto += `Gerado em: ${new Date().toLocaleString('pt-BR')}\n`;
-            texto += `Família: ${DOM.nomePessoaDisplay?.innerText || 'Usuário'}\n`;
-            texto += `--------------------------------------------------\n`;
-            let total = 0;
-            itens.forEach(i => {
-                const desc = i.origem === 'simples' ? i.nome : `${i.nomeOperacao} (${i.numeroParcela}/${i.totalParcelas})`;
-                const dataPag = i.dataPagamento ? formatarDataBR(i.dataPagamento) : '—';
-                texto += `Venc: ${formatarDataBR(i.vencimento)} | ${desc} | Pag: ${dataPag} | Valor: ${formatarMoeda(i.valor)}\n`;
-                total += i.valor;
-            });
-            texto += `--------------------------------------------------\n`;
-            texto += `TOTAL: ${formatarMoeda(total)}\n`;
-            return texto;
-        }
-
-        // ===== Funções de exportação (PDF, Email, WhatsApp) =====
-        function exportarPDF(itens, titulo) {
-            if (itens.length === 0) { exibirToast("Nenhum item para exportar."); return; }
-            const printWindow = window.open('', '_blank');
-            printWindow.document.write(`
-                <html><head><title>${titulo}</title>
-                <style>body{font-family:Arial; padding:20px;} table{border-collapse:collapse; width:100%;} th,td{border:1px solid #ccc; padding:8px; text-align:left;} th{background:#f1f5f9;} .total{font-weight:bold; margin-top:20px;}</style>
-                </head><body>
-                <h1>${titulo}</h1>
-                <p>${DOM.nomePessoaDisplay?.innerText || ''} - ${new Date().toLocaleString('pt-BR')}</p>
-                <table><thead><tr><th>Vencimento</th><th>Descrição</th><th>Data Pagamento</th><th>Valor</th></tr></thead><tbody>
-                ${itens.map(i => `<tr><td>${formatarDataBR(i.vencimento)}</td><td>${i.origem === 'simples' ? i.nome : `${i.nomeOperacao} (${i.numeroParcela}/${i.totalParcelas})`}</td><td>${i.dataPagamento ? formatarDataBR(i.dataPagamento) : '—'}</td><td style="text-align:right">${formatarMoeda(i.valor)}</td></tr>`).join('')}
-                </tbody></table>
-                <div class="total">Total: ${formatarMoeda(itens.reduce((s,i)=>s+i.valor,0))}</div>
-                </body></html>
-            `);
-            printWindow.document.close();
-            printWindow.print();
-        }
-
-        function exportarEmail(itens, titulo) {
-            if (itens.length === 0) { exibirToast("Nenhum item para exportar."); return; }
-            const texto = gerarTextoHistorico(itens, titulo);
-            window.location.href = `mailto:?subject=Relatório - Ama Finanças&body=${encodeURIComponent(texto)}`;
-        }
-
-        function exportarWhatsApp(itens, titulo) {
-            if (itens.length === 0) { exibirToast("Nenhum item para exportar."); return; }
-            const texto = gerarTextoHistorico(itens, titulo);
-            window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank');
-        }
-
-        // ===== Modais =====
-        function abrirModal(editing = false) {
-            if (DOM.modalForm) DOM.modalForm.classList.remove('hidden');
-            if (DOM.modalTitle) DOM.modalTitle.innerText = editing ? 'Editar Lançamento' : 'Novo Lançamento';
-            if (!editing) DOM.financeForm?.reset();
-        }
-
-        function fecharModal() {
-            if (DOM.modalForm) DOM.modalForm.classList.add('hidden');
-            DOM.financeForm?.reset();
-        }
-
-        function abrirParcelamentoModal() {
-            if (DOM.modalParcelamento) DOM.modalParcelamento.classList.remove('hidden');
-            DOM.parcelamentoForm?.reset();
-            if (DOM.parcValorCalc) DOM.parcValorCalc.value = '';
-        }
-
-        function fecharParcelamentoModal() {
-            if (DOM.modalParcelamento) DOM.modalParcelamento.classList.add('hidden');
-            DOM.parcelamentoForm?.reset();
-        }
-
-        // ===== Tabs =====
-        function switchTab(tab) {
-            document.querySelectorAll('.tab-content').forEach(c => {
-                c.classList.add('hidden');
-                c.classList.remove('block');
-            });
-            const target = document.getElementById(`tab-${tab}`);
-            if (target) {
-                target.classList.remove('hidden');
-                target.classList.add('block');
-            }
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.remove('bg-rose-500', 'text-white', 'font-semibold');
-                btn.classList.add('text-slate-500');
-            });
-            const active = document.getElementById(`btn-${tab}`);
-            if (active) {
-                active.classList.add('bg-rose-500', 'text-white', 'font-semibold');
-            }
-
-            const titles = {
-                dashboard: '📊 Dashboard',
-                pagar: '💸 Contas a Pagar',
-                receber: '💰 Contas a Receber',
-                parcelas: '📋 Parcelamentos',
-                calendario: '📅 Calendário Mensal',
-                'historico-pagos': '📜 Histórico de Pagamentos',
-                'historico-recebidos': '📜 Histórico de Recebimentos',
-                relatorio: '📊 Relatório Mensal'
-            };
-            if (DOM.pageTitle) DOM.pageTitle.innerText = titles[tab] || tab;
-        }
-
-        // ===== Toast =====
-        function exibirToast(msg) {
-            let t = document.querySelector('.toast-message');
-            if (t) t.remove();
-            t = document.createElement('div');
-            t.className = 'toast-message';
-            t.innerHTML = `<i class="fa-regular fa-bell mr-2"></i>${msg}`;
-            document.body.appendChild(t);
-            setTimeout(() => t.remove(), 3500);
-        }
-
-        // ===== Controle de toggle do calendário =====
-        function toggleMes(idx) {
-            if (estadoUI.mesesAbertos.has(idx)) estadoUI.mesesAbertos.delete(idx);
-            else estadoUI.mesesAbertos.add(idx);
-        }
-
-        function mudarAnoCalendario(delta) {
-            estadoUI.anoCalendario += delta;
-        }
-
-        // ===== Atualizar valor da parcela no modal =====
-        function atualizarValorParcela() {
-            const total = parseFloat(DOM.parcTotal?.value);
-            const num = parseInt(DOM.parcNumero?.value);
-            if (!isNaN(total) && !isNaN(num) && num > 0 && DOM.parcValorCalc) {
-                DOM.parcValorCalc.value = (total / num).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-            }
-        }
-
-        return {
-            DOM,
-            estadoUI,
-            initCharts,
-            renderizarTudo,
-            renderizarContas,
-            renderizarParcelas,
-            renderizarCalendario,
-            renderizarRelatorio,
-            renderizarHistoricoPagos,
-            renderizarHistoricoRecebidos,
-            gerarTextoHistorico,
-            exportarPDF,
-            exportarEmail,
-            exportarWhatsApp,
-            abrirModal,
-            fecharModal,
-            abrirParcelamentoModal,
-            fecharParcelamentoModal,
-            switchTab,
-            exibirToast,
-            toggleMes,
-            mudarAnoCalendario,
-            atualizarValorParcela,
-        };
-    })();
-
-    // ================= ORQUESTRADOR PRINCIPAL (APP) =================
-    const app = (() => {
-        let isLoginMode = true;
-
-        // ===== Inicialização =====
-        async function init() {
-            uiManager.initCharts();
-
-            dataManager.onAuthChange(async (user) => {
-                if (user) {
-                    uiManager.DOM.authScreen?.classList.add('hidden');
-                    uiManager.DOM.appScreen?.classList.remove('hidden');
-                    if (uiManager.DOM.nomePessoaDisplay) {
-                        uiManager.DOM.nomePessoaDisplay.innerText = user.email.split('@')[0].toUpperCase();
-                    }
-
-                    try {
-                        await dataManager.carregarDados();
-                        dataManager.atualizarStatusAutomatico();
-                        const fluxos = dataManager.obterTodosFluxos();
-                        uiManager.renderizarTudo(fluxos);
-                    } catch (e) {
-                        uiManager.exibirToast("Erro ao carregar dados da nuvem.");
-                    }
-                } else {
-                    uiManager.DOM.authScreen?.classList.remove('hidden');
-                    uiManager.DOM.appScreen?.classList.add('hidden');
-                }
-            });
-
-            configurarEventos();
-        }
-
-        // ===== Configuração de eventos =====
-        function configurarEventos() {
-            const DOM = uiManager.DOM;
-
-            // Autenticação
-            document.getElementById('authForm')?.addEventListener('submit', handleAuth);
-
-            // Botões de navegação
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const tab = btn.id.replace('btn-', '');
-                    uiManager.switchTab(tab);
-                });
-            });
-
-            // Filtros
-            ['filtroMesPagar', 'filtroStatusPagar', 'ordenarPagar',
-                'filtroMesReceber', 'filtroStatusReceber', 'ordenarReceber'
-            ].forEach(id => {
-                document.getElementById(id)?.addEventListener('change', () => {
-                    const fluxos = dataManager.obterTodosFluxos();
-                    uiManager.renderizarContas(fluxos);
-                });
-            });
-
-            // Filtros relatório
-            DOM.mesInicio?.addEventListener('change', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarRelatorio(fluxos);
-            });
-            DOM.mesFim?.addEventListener('change', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarRelatorio(fluxos);
-            });
-
-            // Filtros histórico
-            document.querySelector('#tab-historico-pagos .btn-limpar')?.addEventListener('click', () => {
-                if(DOM.histPagosDataIni) DOM.histPagosDataIni.value = '';
-                if(DOM.histPagosDataFim) DOM.histPagosDataFim.value = '';
-                if(DOM.histPagosTipo) DOM.histPagosTipo.value = 'todos';
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarHistoricoPagos(fluxos);
-            });
-            document.querySelector('#tab-historico-recebidos .btn-limpar')?.addEventListener('click', () => {
-                if(DOM.histRecebidosDataIni) DOM.histRecebidosDataIni.value = '';
-                if(DOM.histRecebidosDataFim) DOM.histRecebidosDataFim.value = '';
-                if(DOM.histRecebidosTipo) DOM.histRecebidosTipo.value = 'todos';
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarHistoricoRecebidos(fluxos);
-            });
-
-            // Botões de exportação
-            document.querySelector('#tab-historico-pagos .btn-pdf')?.addEventListener('click', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-                uiManager.exportarPDF(itens, 'Histórico de Contas Pagas');
-            });
-            document.querySelector('#tab-historico-pagos .btn-email')?.addEventListener('click', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-                uiManager.exportarEmail(itens, '📋 HISTÓRICO DE CONTAS PAGAS');
-            });
-            document.querySelector('#tab-historico-pagos .btn-whatsapp')?.addEventListener('click', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-                uiManager.exportarWhatsApp(itens, '📋 HISTÓRICO DE CONTAS PAGAS');
-            });
-
-            document.querySelector('#tab-historico-recebidos .btn-pdf')?.addEventListener('click', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-                uiManager.exportarPDF(itens, 'Histórico de Contas Recebidas');
-            });
-            document.querySelector('#tab-historico-recebidos .btn-email')?.addEventListener('click', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-                uiManager.exportarEmail(itens, '📋 HISTÓRICO DE CONTAS RECEBIDAS');
-            });
-            document.querySelector('#tab-historico-recebidos .btn-whatsapp')?.addEventListener('click', () => {
-                const fluxos = dataManager.obterTodosFluxos();
-                const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-                uiManager.exportarWhatsApp(itens, '📋 HISTÓRICO DE CONTAS RECEBIDAS');
-            });
-
-            // Modais
-            document.querySelector('#modalForm .close')?.addEventListener('click', uiManager.fecharModal);
-            document.querySelector('#modalParcelamento .close')?.addEventListener('click', uiManager.fecharParcelamentoModal);
-            document.getElementById('modalForm')?.addEventListener('click', (e) => {
-                if (e.target === e.currentTarget) uiManager.fecharModal();
-            });
-            document.getElementById('modalParcelamento')?.addEventListener('click', (e) => {
-                if (e.target === e.currentTarget) uiManager.fecharParcelamentoModal();
-            });
-
-            // Forms
-            DOM.financeForm?.addEventListener('submit', salvarRegistro);
-            DOM.parcelamentoForm?.addEventListener('submit', salvarParcelamento);
-
-            // Delegar eventos para botões dinâmicos
-            document.addEventListener('click', (e) => {
-                const target = e.target.closest('button');
-                
-                // Calendário - Mudar Ano (Prevenção de erro inline)
-                const btnAno = e.target.closest('[onclick*="mudarAnoCalendario"]');
-                if (btnAno) {
-                    e.preventDefault();
-                    const delta = btnAno.textContent.includes('chevron-left') ? -1 : 1;
-                    uiManager.mudarAnoCalendario(delta);
-                    const fluxos = dataManager.obterTodosFluxos();
-                    uiManager.renderizarCalendario(fluxos);
-                    return;
-                }
-
-                if (!target) return;
-
-                // Botão pagar
-                if (target.classList.contains('btn-pagar')) {
-                    const origem = target.dataset.origem;
-                    const id = target.dataset.id;
-                    const parcId = target.dataset.parcid;
-                    const parcelaId = target.dataset.parcelaid;
-                    pagarItem(origem, id, parcId, parcelaId);
-                }
-
-                // Botão excluir
-                if (target.classList.contains('btn-excluir')) {
-                    const origem = target.dataset.origem;
-                    const id = target.dataset.id;
-                    const parcId = target.dataset.parcid;
-                    const parcelaId = target.dataset.parcelaid;
-                    excluirItem(origem, id, parcId, parcelaId);
-                }
-
-                // Toggle mes no calendário
-                if (e.target.closest('.mes-header')) {
-                    const mesHeader = e.target.closest('.mes-header');
-                    const mesIdx = parseInt(mesHeader.dataset.mes);
-                    if (!isNaN(mesIdx)) {
-                        uiManager.toggleMes(mesIdx);
-                        const fluxos = dataManager.obterTodosFluxos();
-                        uiManager.renderizarCalendario(fluxos);
-                    }
-                }
-            });
-
-            // Autenticação - toggle mode
-            document.querySelector('#auth-toggle-text button')?.addEventListener('click', toggleAuthMode);
-        }
-
-        // ===== Handlers de autenticação =====
-        async function handleAuth(e) {
-            e.preventDefault();
-            const email = uiManager.DOM.authEmail?.value.trim();
-            const senha = uiManager.DOM.authSenha?.value;
-            const btn = uiManager.DOM.btnAuthSubmit;
-            if (!email || !senha) return;
+            function exibirToast(msg) { const t = document.createElement('div'); t.className = 'toast-message'; t.innerText = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3000); }
             
-            btn.disabled = true;
-            btn.innerText = "Processando...";
+            return { DOM, estadoUI, initCharts, renderizarTudo, renderizarContas, renderizarParcelas, abrirModal, fecharModal, abrirParcelamentoModal, fecharParcelamentoModal, switchTab, exibirToast };
+        })();
 
-            try {
-                if (isLoginMode) {
-                    await dataManager.login(email, senha);
-                    uiManager.exibirToast("Bem-vindo de volta!");
-                } else {
-                    await dataManager.cadastrar(email, senha);
-                    uiManager.exibirToast("Conta criada com sucesso!");
-                }
-            } catch (error) {
-                console.error(error);
-                if (error.code === 'auth/invalid-credential') uiManager.exibirToast("E-mail ou senha incorretos.");
-                else if (error.code === 'auth/email-already-in-use') uiManager.exibirToast("Este e-mail já está em uso.");
-                else uiManager.exibirToast("Erro ao processar autenticação.");
-            } finally {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.innerText = isLoginMode ? 'Entrar' : 'Criar Conta';
-                }
-            }
-        }
-
-        function toggleAuthMode() {
-            isLoginMode = !isLoginMode;
-            if (uiManager.DOM.btnAuthSubmit) {
-                uiManager.DOM.btnAuthSubmit.innerText = isLoginMode ? 'Entrar' : 'Criar Conta';
-            }
-            if (uiManager.DOM.authToggleText) {
-                uiManager.DOM.authToggleText.innerHTML = isLoginMode ?
-                    `Não tem uma conta? <button type="button" class="text-rose-500 font-bold hover:underline">Cadastre-se grátis</button>` :
-                    `Já possui conta? <button type="button" class="text-rose-500 font-bold hover:underline">Faça login</button>`;
-                uiManager.DOM.authToggleText.querySelector('button').addEventListener('click', toggleAuthMode);
-            }
-        }
-
-        // ===== Handlers de CRUD =====
-        async function salvarRegistro(e) {
-            e.preventDefault();
-            if (!dataManager.getCurrentUser()) return;
-
-            const data = uiManager.DOM.formData?.value;
-            const valor = parseFloat(uiManager.DOM.formValor?.value);
-            const nome = uiManager.DOM.formNome?.value.trim();
-            const tipo = uiManager.DOM.formFluxo?.value;
-
-            if (!data || !valor || !nome) {
-                uiManager.exibirToast("Preencha todos os campos obrigatórios.");
-                return;
-            }
-            if (valor <= 0) {
-                uiManager.exibirToast("O valor deve ser maior que zero.");
-                return;
-            }
-
-            const id = "simples_" + Date.now();
-            const payload = {
-                aba: tipo,
-                vencimento: data,
-                nome: nome.toUpperCase(),
-                valor: valor,
-                tipo: uiManager.DOM.formTipo?.value || '',
-                status: uiManager.DOM.formStatus?.value || 'PENDENTE',
-                dataModificacao: new Date().toISOString()
-            };
-
-            try {
-                await dataManager.salvarSimples(id, payload);
-                uiManager.exibirToast("Salvo com sucesso na Nuvem!");
-                uiManager.fecharModal();
-                await dataManager.carregarDados();
-                dataManager.atualizarStatusAutomatico();
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarTudo(fluxos);
-            } catch (err) {
-                console.error(err);
-                uiManager.exibirToast("Erro ao salvar no servidor.");
-            }
-        }
-
-        async function salvarParcelamento(e) {
-            e.preventDefault();
-            if (!dataManager.getCurrentUser()) return;
-
-            const tipo = uiManager.DOM.parcTipo?.value;
-            const dataCompra = uiManager.DOM.parcDataCompra?.value;
-            const nome = uiManager.DOM.parcNome?.value.trim();
-            const num = parseInt(uiManager.DOM.parcNumero?.value);
-            const total = parseFloat(uiManager.DOM.parcTotal?.value);
-            const primeiro = uiManager.DOM.parcPrimeiroVenc?.value;
-
-            if (!dataCompra || !nome || !num || !total || !primeiro) {
-                uiManager.exibirToast("Preencha todos os campos.");
-                return;
-            }
-            if (total <= 0 || num <= 0) {
-                uiManager.exibirToast("Valor e número de parcelas devem ser positivos.");
-                return;
-            }
-
-            const valorParcela = total / num;
-            let parcelas = [],
-                dataVenc = stringParaData(primeiro),
-                soma = 0;
-
-            for (let i = 1; i <= num; i++) {
-                let vp = (i === num) ? (total - soma) : valorParcela;
-                const vencStr = `${dataVenc.getFullYear()}-${String(dataVenc.getMonth() + 1).padStart(2, '0')}-${String(dataVenc.getDate()).padStart(2, '0')}`;
-                parcelas.push({
-                    id: "p_" + Date.now() + "_" + i,
-                    numero: i,
-                    valor: parseFloat(vp.toFixed(2)),
-                    vencimento: vencStr,
-                    dataPagamento: null,
-                    status: 'PENDENTE'
-                });
-                soma += vp;
-                dataVenc.setMonth(dataVenc.getMonth() + 1);
-            }
-
-            const idDoc = "parc_" + Date.now();
-            const payload = {
-                tipo,
-                nomeOperacao: nome.toUpperCase(),
-                dataCompra,
-                parcelas
-            };
-
-            try {
-                await dataManager.salvarParcelamento(idDoc, payload);
-                uiManager.exibirToast("Parcelamento salvo na nuvem!");
-                uiManager.fecharParcelamentoModal();
-                await dataManager.carregarDados();
-                dataManager.atualizarStatusAutomatico();
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarTudo(fluxos);
-            } catch (err) {
-                console.error(err);
-                uiManager.exibirToast("Erro ao registrar parcelamento.");
-            }
-        }
-
-        async function pagarItem(origem, id, parcId, parcelaId) {
-            try {
-                if (origem === 'simples') {
-                    const item = dataManager.getDadosSimples().find(i => i.id === id);
-                    if (!item) return;
-                    const novoStatus = item.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
-                    const dataPag = novoStatus === 'PAGO' ? new Date().toISOString().slice(0, 10) : null;
-                    await dataManager.salvarSimples(id, { status: novoStatus, dataPagamento: dataPag });
-                } else {
-                    const parc = dataManager.getParcelamentos().find(p => p.id === parcId);
-                    if (!parc) return;
-                    const p = parc.parcelas.find(p => p.id === parcelaId);
-                    if (!p) return;
-                    const novoStatus = p.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
-                    const dataPag = novoStatus === 'PAGO' ? new Date().toISOString().slice(0, 10) : null;
-                    await dataManager.atualizarParcela(parcId, parcelaId, novoStatus, dataPag);
-                }
-                uiManager.exibirToast("Status updated!");
-                await dataManager.carregarDados();
-                dataManager.atualizarStatusAutomatico();
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarTudo(fluxos);
-            } catch (err) {
-                console.error(err);
-                uiManager.exibirToast("Erro ao alterar status.");
-            }
-        }
-
-        async function excluirItem(origem, id, parcId, parcelaId) {
-            if (!confirm("Confirmar exclusão permanente na nuvem?")) return;
-            try {
-                if (origem === 'simples') {
-                    await dataManager.excluirSimples(id);
-                } else {
-                    const parc = dataManager.getParcelamentos().find(p => p.id === parcId);
-                    if (!parc) return;
-                    const fil = parc.parcelas.filter(p => p.id !== parcelaId);
-                    if (fil.length === 0) {
-                        await dataManager.excluirParcelamento(parcId);
+        const app = (() => {
+            let isLoginMode = true;
+            async function init() {
+                uiManager.initCharts();
+                dataManager.onAuthChange(async (user) => {
+                    if (user) {
+                        uiManager.DOM.authScreen?.classList.add('hidden'); uiManager.DOM.appScreen?.classList.remove('hidden');
+                        if (uiManager.DOM.nomePessoaDisplay) uiManager.DOM.nomePessoaDisplay.innerText = user.email.split('@')[0].toUpperCase();
+                        await recarregar();
                     } else {
-                        await dataManager.salvarParcelamento(parcId, { parcelas: fil });
+                        uiManager.DOM.authScreen?.classList.remove('hidden'); uiManager.DOM.appScreen?.classList.add('hidden');
                     }
-                }
-                uiManager.exibirToast("Removido da Nuvem!");
-                await dataManager.carregarDados();
-                dataManager.atualizarStatusAutomatico();
-                const fluxos = dataManager.obterTodosFluxos();
-                uiManager.renderizarTudo(fluxos);
-            } catch (err) {
-                console.error(err);
-                uiManager.exibirToast("Erro ao deletar.");
+                });
+                configurarEventos();
             }
-        }
-
-        async function handleLogout() {
-            if (confirm("Deseja realmente sair?")) {
-                await dataManager.logout();
-                uiManager.exibirToast("Sessão encerrada.");
+            async function recarregar() { await dataManager.carregarDados(); dataManager.atualizarStatusAutomatico(); uiManager.renderizarTudo(dataManager.obterTodosFluxos()); }
+            function configurarEventos() {
+                uiManager.DOM.authForm?.addEventListener('submit', async (e) => {
+                    e.preventDefault(); const em = uiManager.DOM.authEmail.value; const se = uiManager.DOM.authSenha.value;
+                    try { if (isLoginMode) await dataManager.login(em, se); else await dataManager.cadastrar(em, se); uiManager.exibirToast("Sucesso!"); } catch(err) { uiManager.exibirToast("Falha na autenticação."); }
+                });
+                document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => uiManager.switchTab(b.id.replace('btn-', ''))));
+                uiManager.DOM.financeForm?.addEventListener('submit', async (e) => {
+                    e.preventDefault(); const id = "simples_" + Date.now();
+                    const payload = { aba: uiManager.DOM.formFluxo.value, vencimento: uiManager.DOM.formData.value, nome: uiManager.DOM.formNome.value.toUpperCase(), valor: parseFloat(uiManager.DOM.formValor.value), status: uiManager.DOM.formStatus.value };
+                    await dataManager.salvarSimples(id, payload); uiManager.fecharModal(); await recarregar();
+                });
+                uiManager.DOM.parcelamentoForm?.addEventListener('submit', async (e) => {
+                    e.preventDefault(); const num = parseInt(uiManager.DOM.parcNumero.value); const total = parseFloat(uiManager.DOM.parcTotal.value); const vParc = total/num; let parcelas = []; let dt = stringParaData(uiManager.DOM.parcPrimeiroVenc.value);
+                    for(let i=1; i<=num; i++) { parcelas.push({ id: `p_${Date.now()}_${i}`, numero: i, valor: vParc, vencimento: dt.toISOString().slice(0,10), status: 'PENDENTE' }); dt.setMonth(dt.getMonth()+1); }
+                    await dataManager.salvarParcelamento("parc_"+Date.now(), { tipo: uiManager.DOM.parcTipo.value, nomeOperacao: uiManager.DOM.parcNome.value.toUpperCase(), dataCompra: uiManager.DOM.parcDataCompra.value, parcelas });
+                    uiManager.fecharParcelamentoModal(); await recarregar();
+                });
+                document.getElementById('parc-total')?.addEventListener('input', () => { const t = parseFloat(uiManager.DOM.parcTotal.value); const n = parseInt(uiManager.DOM.parcNumero.value); if(t && n) uiManager.DOM.parcValorCalc.value = formatarMoeda(t/n); });
+                document.getElementById('parc-numero')?.addEventListener('input', () => { const t = parseFloat(uiManager.DOM.parcTotal.value); const n = parseInt(uiManager.DOM.parcNumero.value); if(t && n) uiManager.DOM.parcValorCalc.value = formatarMoeda(t/n); });
+                document.addEventListener('click', async (e) => {
+                    const target = e.target.closest('button'); if (!target) return;
+                    if (target.classList.contains('btn-pagar')) {
+                        const { origem, id, parcid, parcelaid } = target.dataset;
+                        if (origem === 'simples') { const item = dataManager.getDadosSimples().find(x=>x.id===id); await dataManager.salvarSimples(id, { status: item.status==='PAGO'?'PENDENTE':'PAGO', dataPagamento: item.status==='PAGO'?null:new Date().toISOString().slice(0,10) }); }
+                        else { const parc = dataManager.getParcelamentos().find(x=>x.id===parcid); const p = parc.parcelas.find(x=>x.id===parcelaid); await dataManager.atualizarParcela(parcid, parcelaid, p.status==='PAGO'?'PENDENTE':'PAGO', p.status==='PAGO'?null:new Date().toISOString().slice(0,10)); }
+                        await recarregar();
+                    }
+                    if (target.classList.contains('btn-excluir')) {
+                        if (!confirm("Excluir item?")) return; const { origem, id, parcid, parcelaid } = target.dataset;
+                        if (origem === 'simples') await dataManager.excluirSimples(id);
+                        else { const parc = dataManager.getParcelamentos().find(x=>x.id===parcid); const fil = parc.parcelas.filter(x=>x.id!==parcelaid); if(fil.length===0) await dataManager.excluirParcelamento(parcid); else await dataManager.salvarParcelamento(parcid, { parcelas: fil }); }
+                        await recarregar();
+                    }
+                });
+                uiManager.DOM.authToggleText?.querySelector('button')?.addEventListener('click', () => { isLoginMode = !isLoginMode; uiManager.DOM.btnAuthSubmit.innerText = isLoginMode ? 'Entrar' : 'Criar Conta'; });
             }
-        }
-
-        // Registro de escopo global seguro para chamadas dinâmicas
-        window.handleLogout = handleLogout;
-        window.toggleAuthMode = toggleAuthMode;
-        window.openModal = () => uiManager.abrirModal(false);
-        window.closeModal = uiManager.fecharModal;
-        window.openParcelamentoModal = uiManager.abrirParcelamentoModal;
-        window.closeParcelamentoModal = uiManager.fecharParcelamentoModal;
-        window.atualizarValorParcela = uiManager.atualizarValorParcela;
-        window.toggleMes = uiManager.toggleMes;
-        window.switchTab = uiManager.switchTab;
-        window.exibirToast = uiManager.exibirToast;
-
-        window.exportarHistoricoPagosPDF = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-            uiManager.exportarPDF(itens, 'Histórico de Contas Pagas');
-        };
-        window.exportarHistoricoPagosEmail = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-            uiManager.exportarEmail(itens, '📋 HISTÓRICO DE CONTAS PAGAS');
-        };
-        window.exportarHistoricoPagosWhatsApp = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'pagar');
-            uiManager.exportarWhatsApp(itens, '📋 HISTÓRICO DE CONTAS PAGAS');
-        };
-        window.exportarHistoricoRecebidosPDF = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-            uiManager.exportarPDF(itens, 'Histórico de Contas Recebidas');
-        };
-        window.exportarHistoricoRecebidosEmail = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-            uiManager.exportarEmail(itens, '📋 HISTÓRICO DE CONTAS RECEBIDAS');
-        };
-        window.exportarHistoricoRecebidosWhatsApp = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            const itens = fluxos.filter(f => f.status === 'PAGO' && f.aba === 'receber');
-            uiManager.exportarWhatsApp(itens, '📋 HISTÓRICO DE CONTAS RECEBIDAS');
-        };
-
-        window.aplicarFiltroHistoricoPagos = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            uiManager.renderizarHistoricoPagos(fluxos);
-        };
-        window.limparFiltroHistoricoPagos = () => {
-            if(uiManager.DOM.histPagosDataIni) uiManager.DOM.histPagosDataIni.value = '';
-            if(uiManager.DOM.histPagosDataFim) uiManager.DOM.histPagosDataFim.value = '';
-            if(uiManager.DOM.histPagosTipo) uiManager.DOM.histPagosTipo.value = 'todos';
-            const fluxos = dataManager.obterTodosFluxos();
-            uiManager.renderizarHistoricoPagos(fluxos);
-        };
-        window.aplicarFiltroHistoricoRecebidos = () => {
-            const fluxos = dataManager.obterTodosFluxos();
-            uiManager.renderizarHistoricoRecebidos(fluxos);
-        };
-        window.limparFiltroHistoricoRecebidos = () => {
-            if(uiManager.DOM.histRecebidosDataIni) uiManager.DOM.histRecebidosDataIni.value = '';
-            if(uiManager.DOM.histRecebidosDataFim) uiManager.DOM.histRecebidosDataFim.value = '';
-            if(uiManager.DOM.histRecebidosTipo) uiManager.DOM.histRecebidosTipo.value = 'todos';
-            const fluxos = dataManager.obterTodosFluxos();
-            uiManager.renderizarHistoricoRecebidos(fluxos);
-        };
-
-        // Escuta a digitação para atualizar dinamicamente o valor das parcelas no modal
-        document.getElementById('parc-total')?.addEventListener('input', uiManager.atualizarValorParcela);
-        document.getElementById('parc-numero')?.addEventListener('input', uiManager.atualizarValorParcela);
-
-        init();
-
-        return {
-            init,
-            handleLogout,
-            toggleAuthMode,
-            salvarRegistro,
-            salvarParcelamento,
-            pagarItem,
-            excluirItem
-        };
-    })();
-
-    console.log('Ama Finanças - Versão Corrigida e Segura');
-</script>
+            window.handleLogout = async () => { if(confirm("Sair?")) { await dataManager.logout(); location.reload(); } };
+            window.openModal = uiManager.abrirModal; window.closeModal = uiManager.fecharModal;
+            window.openParcelamentoModal = uiManager.abrirParcelamentoModal; window.closeParcelamentoModal = uiManager.fecharParcelamentoModal;
+            window.mudarAnoCalendario = (delta) => { uiManager.estadoUI.anoCalendario += delta; uiManager.renderizarTudo(dataManager.obterTodosFluxos()); };
+            init();
+        })();
+    </script>
+</body>
+</html>
